@@ -1,5 +1,11 @@
 ;STILL NOT SURE HOW TO TELL IT TO BEGIN EXECUTION IN THE BOOTLOADER SECTION
-;FOR USART: "The initialization process normally consists of setting the baud rate, setting frame format and enabling the Transmitter or the Receiver depending on the usage."
+	;"the Boot Reset Fuse can be programmed so that the Reset Vector is pointing to the Boot Flash 
+	;	start address after a reset. In this case, the Boot Loader is started after a reset."
+	;basically just make the boot reset fuse = 0 
+	;	and it'll reset to whatever position is indicated by the BOOTSZ1 BOOTSZ0 fuses (the fuses that control where bootloader memory begins)
+	;	(I want to make the smallest bootloader possible on the 328p: 256 words
+;UHHH DO I ACTUALLY NEED TO ERASE THE PAGE BEFORE I WRITE TO IT????
+;EVERYTHING IS UNTESTED (of course)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -11,10 +17,17 @@
 ;   R31     R30
 ;xxpppppp ppwwwwww 
 
+;you can only write to the flash one page at a time
+;first fill the page buffer, then erase the old page, then write the new page.
+
+
 .INCLUDE iodefs.asm
 
 .EQU PAGE_LENGTH = 64
 .EQU NUM_PAGES = 252 ;not 256 because last 4 pages are the bootloader itself
+
+.EQU BAUD_RATE_HI = 0 ;baud rate bytes for USART
+.EQU BAUD_RATE_LO = 0
 
 .EQU BTN_IN_PIN = 0
 
@@ -26,22 +39,40 @@
 	ldi Z, 0 ;current word in flash that we're updating
 	ldi R3, 0 ;current page number
 
+;init USART
+	ldi R4, BAUD_RATE_HI 
+	out UBRR0H, R4 ;init baud rate hi
+	ldi R4, BAUD_RATE_LO
+	out UBRR0L, R4 ;init baud rate lo
+	ldi R4, 0b00010000
+	out UCSR0B, R4 ;enable USART reciever mode
+	ldi R4, THE FRAME FORMAT HERE WHATEVER IT IS ;AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
+	out UCSR0C, R4
+
+wait_for_initial_program_byte:
+	sbis UCSR0A, 7 ;wait until there is there is some unread data in USART 
+	rjmp wait_for_initial_program_byte
+
+
+
 update_next_page:
 	ld R2, 0 ;current word number
 
-fill_page_buffer:
-	;PUT ANOTHER WORD INTO BUFFER HERE SOMEHOW
+	recieve_byte()
+	;RUN THE RECIEVE BYTE MACRO A COUPLE TIMES ON THE RIGHT REGISTERS AND STUFF
 
-;either keep loading page buffer or exit and write the page
+;either keep filling page buffer or write the page
 	cpi R2, PAGE_LENGTH ;current word number - PAGE_LENGTH
 	brsh write_page ;write page if whole page is written to buffer
 	inc R2 ;otherwise, continue filling page
 	inc Z
 	rjmp fill_page_buffer
 
+
+
 write_page:
 	ldi R2, 0b00000011 ;Enable SPM, page erase mode
-	out SPMCSR, R0
+	out SPMCSR, R2
 	spm ;erase the page
 
 wait_erase_complete:
@@ -64,54 +95,37 @@ wait_write_complete:
 	inc Z ;increment Z here since we didn't do it at the end of the last buffer load
 	rjmp update_next_page
 
+
+
 end_flash_write:
 	jmp 0 ;start uploaded program
 
 
 
+;arguments:	1: the register to store the recieved byte in
+;returns:	arg1: the byte that was recieved
+;			R5: 0 if a byte was read, 1 otherwise
+;trashes:	Y
+.MACRO recieve_byte:
 
+;initialize variables
+	ldi R5, 1 ;1 indicates byte has not been recieved
+	ldi Y, 0 ;counter to keep track of how long we've waited for the current byte
 
+wait_for_byte:
+;first, exit if we wait a long time without any new byte
+	inc Y
+	mov R4, YL ;move lo byte of Y to R4 so I can OR both bytes of Y together to check if they're 0
+	or R4, YH ;check if Y == 0
+	breq return ;if Y == 0 then it's been incremented 2**16 times so it's probably safe to say theres no more data coming
 
+;check if we're still waiting for byte	
+	sbis UCSR0A, 7 ;wait until there is there is some unread data in USART 
+	rjmp wait_for_byte ;if theres no unread data then keep waiting
 
-
-
-
-;Z: the location of the page to erase
-flash_erase:
-	push R0
-
-;erase page specified by Z
-	ldi R0, 0b00000011 ;Enable SPM, page erase mode
-	out SPMCSR, R0
-	spm ;erase the page
-
-;return
-	pop R0
-	ret
-
-
-;R1:R0: data to write to page
-;Z: location of page
-flash_write:
-	push R2
-
-;fill buffer
-	ldi R2, 0b00000001 ;enable SPM, buffer storage mode
-	out SPMCSR, R2
-	spm ;store R1:R0 in temporary buffer
-
-;write buffer to flash
-	ldi R2, 0b00000101 ;enable SPM, write mode
-	out SPMCSR, R2
-	spm ;write the page
-
-;PROBABLY HAVE TO DO SOME WAITING HERE, FIGURE THAT OUT
-
-;return
-	pop R2
-	ret
-
-
-;Z: the location of the page to write (assumes SPM buffer is already full)
-
-
+;read recieved data
+	ldi R5, 0 ;let caller know that a byte was read
+	in @0, UDR0 ;read byte from USART
+	
+return:
+.ENDMACRO
