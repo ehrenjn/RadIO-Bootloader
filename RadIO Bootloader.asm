@@ -307,16 +307,3 @@ wait_for_empty_transmit_buffer:
 .MACRO hi_byte:
 	(@0 >> 8)
 .ENDMACRO
-
-
-
-;args: 	1: register containing hi byte of word
-;		2: register containing lo byte of word
-;		3: 16 bit value to compare to
-;		4: location to jump to if @0:@1 != @3
-;.MACRO brne_word:
-;	cpi @1, lo_byte @3 ;check if lo byte of word indicates it might be equal to @3
-;	brne @4 ;if word can't @3 then branch to @4
-;	cpi @2, hi_byte @3 ;check if word is equal to @3 for sure
-;	brne @4 ;branch if it's not equal
-;.ENDMACRO
