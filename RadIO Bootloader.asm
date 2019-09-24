@@ -6,37 +6,23 @@
 	;	I want to make the smallest bootloader possible on the 328p: 256 words
 	;	to get a 256 word bootloader you set both BOOTSZ1 and BOOTSZ0 to 1
 ;how to lock bootloader section from being accessed via application memory:
-	;set up the following fuses: BLB12 = 0, BLB11 = 0
+	;set up the following lock bits: BLB12 = 0, BLB11 = 0
 	;this will make it impossible for any executing code to write to the bootloader section 
 	;also makes interrupts unable to be invoked from bootloader (which we're disabling anyway)
 	;also makes application code unable to read bootloader code
 
-;MIGHT WANNA #DEFINE SOME BETTER NAMES FOR THE REGISTERS (since most of them stay constant)
 ;MAKE SURE YOU'RE READING THE RIGHT PIN
-;ADD ERROR HANDLING (send an error byte and spin forever)
 ;MAKE SURE YOU INIT EVERYTHING YOU NEED TO (BASICALLY clr EVERYTHING)
+;THIS BECAUSE OF HOW THE RECEIVING WORKS WE MIGHT ACCIDENTLY TOSS IN 1-2 EXTRA NULL BYTES AT THE END OF APPLICATION MEMORY, BE AWARE OF THIS WHILE TESTING
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
-;IS THE SRAM 2048 BYTES OR 2000? PROBABLY 2048 TBH
-;MAKE A VAR TO KEEP TRACK OF WHAT WORD YOU'RE ON (R2) thats only used for adding to buffer
-;OH MAN I SHOULD JUST STORE A QUEUE SIZE VARIABLE AND THEN I WOULDNT HAVE TO DEAL WITH THE NASTY QUEUE OPs
-	;to check if queue is empty you would just OR both current queue size bytes and check if it's 0
-	;which is only 1 byte faster than doing a cpc...
-	;and only shave off like 5 instructions from checking if queue is full (still need to do a 16 bit cp)
-	;and you lose 2 instructions to incrementing and loweing the current queue size every round
-	;so all in all its not really worth it, just figure out cpc
+	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 ;DONT THINK NUM_PAGES WILL EVER ACTUALLY GET USED ANYWHERE
-;MAKE SURE YOU INCREASE Z, CLEAR THE BUFFER SIZE, AND CLEAR THE HAS BEEN ERASED BIT AFTER YOU WRITE THE PAGE
-	;also make sure you set the erased flag at the end of a page erase
-;IN THE FIRST TWO JUMPS WHEN IM RECIVING A WORD IM NOT SURE IF I SHOULD BE JUMPING TO CHECKING IF THE QUEUE IS FULL OR JUMP RIGHT TO FLASH WRITING, FIGURE IT OUT
-	;the first one is definately wrong (or at least, the comment is)
-	;might need to delete check_if_queue_full just because nothing ever jumps to it
-;IVE SO FAR GOT NO WAY TO WRITE A PARTIALLY FILLED BUFFER TO THE FLASH
-	;hint: right now you're not doing ANY spm if theres no data in the queue... but the only spm operation that requires the queue is filling the buffer!
-	;buffer fill can occur when (buffer is not full && queue is not empty)
-	;an erase can occur when: (buffer is full || (queue is empty && we're done receiving data))
-	;a write can occur when: (erase can occur && erase is done)
-;EVERYTHING IS UNTESTED (of course)
+;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
+;SHOULD I ACTUALLY KEEP TRACK OF HOW MANY PAGES HAVE BEEN WRITTEN AND EXIT IF WE REACH THE MAX?
+	;I guess the best place to add this code would be the beginning of erase (just go into error mode and send a byte that says "tried to erase bootloader section" or something)
+	;COULD ALSO JUST ADD THIS TO PYTHON SCRIPT... but then the program itself wouldnt be safe, and this would be good for bug testing
+;FINISH DEFINITIONS
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -62,6 +48,7 @@
 .EQU REQUEST_NEXT_WORD = 'w' ;asks sender for next word of data
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
 .EQU BAUD_RATE = 0 
+.DEF USART_SEND_REG = 
 
 ;queue definitions
 .EQU QUEUE_END = 2048 ;number of bytes in queue (not words!)
@@ -115,8 +102,8 @@
 	sbi PORTB, LED_PIN ;turn LED on
 
 ;set up variables for program loading
-	set LAST_BUFFERED_WORD_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
-	set LAST_BUFFERED_WORD_HI ;last word that was put in the page buffer was -1
+	ser LAST_BUFFERED_WORD_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
+	ser LAST_BUFFERED_WORD_HI ;last word that was put in the page buffer was -1
 	clr R3 ;current page number = 0
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
@@ -131,7 +118,8 @@
 	out UCSR0C, R4
 
 ;request first word of data
-	send_byte REQUEST_NEXT_WORD
+	ldi USART_SEND_REG, REQUEST_NEXT_WORD
+	rcall send_byte
 
 
 
@@ -141,27 +129,15 @@
 
 receive_word:
 	cpi DONE_RECEIVING_DATA, 1 ;check if we're done receiving data
-	breq check_if_queue_full ;if we're done, jump right to updating the flash
+	breq check_if_spm_done ;if we're done, jump right to updating the flash
 
-;if queue was full last round, check if it still is (instead of receiving a word)
-	cpi QUEUE_IS_FULL, 1 ;check if queue is full
-	breq check_if_queue_full ;if it's full, see if it still is
+;if queue was full last round, then we didn't request a new word. try to request a new word (instead of receiving a word)
+	cpi QUEUE_IS_FULL, 1 ;check if queue was full
+	breq try_to_request_next_word ;if was full, see if it still is
 
-wait_for_byte_1:	
-	sbis UCSR0A, 7 ;see if there is some unread data in USART 
-	rjmp wait_for_byte_1 ;if theres no unread data then keep waiting
-
-;read received data
-	in CURRENT_WORD_HI, UDR0 ;read byte from USART
-	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
-	ldi DONE_RECEIVING_DATA, 1 ;if bit 9 of data was a 1, record it
-
-wait_for_byte_2:	
-	sbis UCSR0A, 7 ;see if there is some unread data in USART 
-	rjmp wait_for_byte_2 ;if theres no unread data then keep waiting
-
-;read received data, no need to check bit 9 this time
-	in CURRENT_WORD_LO, UDR0 ;read byte from USART
+;read in bytes, set DONE_RECEIVING_DATA bit if a disconnect bit is received
+	receive_byte CURRENT_WORD_HI, DONE_RECEIVING_DATA
+	receive_byte CURRENT_WORD_LO, DONE_RECEIVING_DATA
 
 ;add word to queue (we already know that queue is not full and that it is not pointing outside the queue)
 	st HEAD+, CURRENT_WORD_HI ;store first byte of received word in queue and move the head forward
@@ -176,10 +152,19 @@ wait_for_byte_2:
 ;                               request next word
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-check_if_queue_full:
+try_to_request_next_word:
 
-;assume the queue is full by default
-	ldi QUEUE_IS_FULL, 1 
+;check if we're still receiving data
+	cp DONE_RECEIVING_DATA, 1 
+	brne start_queue_full_check ;start checking queue if we're not done receiving data
+
+;disconnect from sender and don't try to request another word (we are done receiving data)
+	ldi USART_SEND_REG, REQUEST_DISCONNECT
+	rcall send_byte ;send request to disconnect
+	rjmp check_if_spm_done ;skip the rest of word requesting, start doing spm
+
+start_queue_full_check:
+	ldi QUEUE_IS_FULL, 1 ;assume the queue is full by default
 
 ;copy head and increase by 2
 	movw GENERAL_PURPOSE_WORD_REG, HEAD ;copy head
@@ -194,7 +179,8 @@ check_if_queue_full:
 	breq check_if_spm_done ;queue is full, lets do flash stuff but without requesting another byte
 
 ;the queue is not full, so we can request another word from the sender
-	send_byte REQUEST_NEXT_WORD
+	ldi USART_SEND_REG, REQUEST_NEXT_WORD
+	rcall send_byte
 	clr QUEUE_IS_FULL ;indicate that there will be a new word to read on the next cycle
 
 
@@ -203,42 +189,35 @@ check_if_queue_full:
 ;                         figure out how to update flash
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;if spm is done:
+	;buffer fill can occur when (buffer is not full && queue is not empty)
+	;an erase can occur when: (buffer is full || (queue is empty && we're done receiving data))
+	;a write can occur when: (erase can occur && erase is done)
+
+
 check_if_spm_done:
 	sbic SPMCSR, 0 ;check if spm is still going, skip next instruction if it's not
 	rjmp receive_word ;we can't do any spm so get the next word instead
 
-;check if the queue is empty
-	cp HEAD_LO, TAIL_LO ;yet another 16 bit compare, this time checking if HEAD == TAIL
-	cpc HEAD_HI, TAIL_HI ;compare with carry (so that result of lo byte cp is taken into account)
-	breq receive_word ;the queue is empty so we need to get another word in there (can't update flash with no queued words) 
-
-;check if page buffer is full yet
-	cpi CURRENT_PAGE_BUFFER_SIZE, PAGE_LENGTH 
-	brne fill_page_buffer ;if page buffer isn't full then we have to keep filling it up before doing other spm
-
-;check if we've erased the current page yet
+;if the old page has been erased, write the new page 
 	cpi PAGE_HAS_BEEN_ERASED, 1 ;check if page has been erased
-	brne erase_page ;erase page if it hasn't been erased yet
+	breq write_page ;if it's been erased then it must be time to write
 
-;time to write the page (since we've already done everything else)
+;else if the page buffer is full we should erase the old page 
+	cpi CURRENT_PAGE_BUFFER_SIZE, PAGE_LENGTH 
+	breq erase_page ;if page buffer is full then it's time to erase
 
+;else if the queue is not empty we need to buffer whats in the queue
+	cp HEAD_LO, TAIL_LO ;checking if HEAD == TAIL
+	cpc HEAD_HI, TAIL_HI ;compare with carry (so that result of lo byte cp is taken into account)
+	brne fill_page_buffer ;the queue is not empty, so lets buffer the next word
 
+;else if we're done receiving data then we need to start erasing (since we already know theres no more data coming, we've buffered all we can, and no page erase has occured yet)
+	cpi DONE_RECEIVING_DATA, 1
+	breq erase_page
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                                   write page
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;write the current page indicated by LAST_BUFFERED_WORD_ADDR
-	ldi GENERAL_PURPOSE_REG_1, 0b00000101 ;enable SPM, write mode
-	out SPMCSR, GENERAL_PURPOSE_REG_1
-	spm ;write the page
-
-;reset all the variables needed to do another spm
-	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
-	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
-
-;restart main loop
-	rjmp receive_word
+;else we can't do any spm
+	rjmp receive_word ;restart the main loop
 
 
 
@@ -287,10 +266,36 @@ erase_page:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                   write page
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+write_page:
+
+;write the current page indicated by LAST_BUFFERED_WORD_ADDR
+	ldi GENERAL_PURPOSE_REG_1, 0b00000101 ;enable SPM, write mode
+	out SPMCSR, GENERAL_PURPOSE_REG_1
+	spm ;write the page
+
+;reset all the variables needed to do another spm
+	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
+	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
+
+;restart main loop
+	rjmp receive_word
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                                exit bootloader
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-exit_bootloader:
+error: ;reports the byte in USART_SEND_REG back to sender then spins forever
+	rcall send_byte
+panic_forever: ;infinite loop
+	rjmp panic_forever
+
+
+exit_bootloader: ;clean exit
 	cbi PORTB, LED_PIN ;turn off LED to indicate we're no longer in the bootloader
 	jmp 0 ;start uploaded program
 
@@ -299,27 +304,49 @@ exit_bootloader:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                              macros and functions
+;                           USART macros and functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-
-
-;args: 1: byte to transmit
-;trashes: R4
-.MACRO send_byte:
+;args: USART_SEND_REG: byte to transmit
+send_byte:
 
 wait_for_empty_transmit_buffer:
 	sbis UCSR0A, 5 ;check if transmit data register is empty
 	rjmp wait_for_empty_transmit_buffer ;if full, keep waiting
 
-;load/send data
+;send data
 	cbi UCSR0B, 0 ;always set 9th bit to 0, it's only used when receiving data
-	ldi R4, @0
-	out UDR0, R4
+	out UDR0, USART_SEND_REG ;begin sending
 
-.ENDMACRO
+;return
+	ret
 
 
+
+;args:	0: register in which to save the received byte
+;		1: register in which to save the 9th bit of data
+.MACRO receive_byte:
+
+wait_for_byte\@:	
+	sbis UCSR0A, 7 ;see if there is some unread data in USART 
+	rjmp wait_for_byte\@ ;if theres no unread data then keep waiting
+
+;make sure there were no errors
+	in USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an asap error
+	andi USART_SEND_REG, 0b00011100 ;mask out all bits except errors
+	lsr USART_SEND_REG, 2 ;shift errors into lower 3 bits (for convenience on the receiving end)
+	brne error ;throw an error if we have any error bits
+
+;read received data
+	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
+	ldi @1, 1 ;if bit 9 of data was a 1, record it
+	in @0, UDR0 ;read byte from USART
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                             general purpose macros
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;args: 1: word to find lo byte of
 ;return: lo byte of arg 1
