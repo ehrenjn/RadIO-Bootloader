@@ -33,8 +33,6 @@
 	;might need to delete check_if_queue_full just because nothing ever jumps to it
 ;IVE SO FAR GOT NO WAY TO WRITE A PARTIALLY FILLED BUFFER TO THE FLASH
 	;hint: right now you're not doing ANY spm if theres no data in the queue... but the only spm operation that requires the queue is filling the buffer!
-;KIDNA NASTY THAT I NEED TO SUBTRACT PAGE_LENGTH (or just 1 because thatd work too) WHENEVER I ERASE OR WRITE FLASH, BUT I DONT THINK THERES A BETTER WAY 
-	;only the word bits are used when writing to temp buff and only page bits are used for erase/write... so maybe you can figure something out
 ;EVERYTHING IS UNTESTED (of course)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
@@ -219,16 +217,27 @@ check_if_queue_empty:
 	cpi PAGE_HAS_BEEN_ERASED, 1 ;check if page has been erased
 	brne erase_page ;erase page if it hasn't been erased yet
 
-;write the page (since we've already done everything else)
-	ldi R2, 0b00000101 ;enable SPM, write mode
-	out SPMCSR, R2
-	spm ;write the page
-
+;time to write the page (since we've already done everything else)
 
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                              fill the page buffer
+;                                   write page
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;write the current page indicated by LAST_BUFFERED_WORD_ADDR
+	ldi GENERAL_PURPOSE_REG_1, 0b00000101 ;enable SPM, write mode
+	out SPMCSR, GENERAL_PURPOSE_REG_1
+	spm ;write the page
+
+;reset all the variables needed to do another spm
+	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
+	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                               fill the page buffer
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 fill_page_buffer:
@@ -242,7 +251,7 @@ fill_page_buffer:
 
 ;increase word counts
 	inc CURRENT_PAGE_BUFFER_SIZE ;track the size of the page buffer
-	adiw LAST_BUFFERED_WORD, 1 ;increase this BEFORE adding to the buffer because spm instruction needs the address for the current word in Z to work
+	adiw LAST_BUFFERED_WORD_ADDR, 1 ;increase this BEFORE adding to the buffer because spm instruction needs the address for the current word in Z to work
 
 ;add word to page buffer
 	sbi SPMCSR, 0 ;enable SPM, page buffer fill mode
@@ -254,66 +263,26 @@ fill_page_buffer:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                                  update flash
+;                                  erase page
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-update_next_page:
-	ld R2, 0 ;current word number
+erase_page:
 
-fill_page_buffer:
-	receive_byte R1 ;store first byte of next instruction word in R1:R0 (have to use R0 and R1)
-	cpi R5, 1 ;check if first byte was read successfully 
-	breq write_page ;if first byte wasn't read properly then we have nothing else to put in the buffer, just write the page
-	receive_byte R0 ;even if we don't receive a 2nd byte we cant write the page yet because we've still received one byte, so we need to add that to the page buffer before writing the page
-
-add_word_to_page_buffer:
-	ldi R4, 1
-	out SPMCSR, R4 ;enable SPM, page buffer fill mode
-	spm ;add instruction to temporary page buffer
-
-;check if it's time to write the page
-	cpi R2, PAGE_LENGTH ;current word number - PAGE_LENGTH
-	brsh write_page ;write page if whole page is written to buffer
-	cpi R5, 1 ;check if last serial byte was read successfully 
-	breq write_page ;if there was an error with the last byte then we've received all data so it's time to write the page
-
-;keep filling buffer, it's not yet time to write the page
-	inc R2 ;continue filling page buffer
-	inc Z
-	rjmp fill_page_buffer
-
-
-
-write_page:
-	ldi R2, 0b00000011 ;Enable SPM, page erase mode
-	out SPMCSR, R2
+	ldi GENERAL_PURPOSE_REG_1, 0b00000011 ;Enable SPM, page erase mode
+	out SPMCSR, GENERAL_PURPOSE_REG_1
 	spm ;erase the page
 
-wait_erase_complete:
-	sbic SPMCSR, 0 ;skip next instruction if bit 0 of SPMCSR is cleared
-	rjmp wait_erase_complete ;if SPM is still going, keep waiting
+;set a bit so we know the erase command for the current page has gone through
+	ldi PAGE_HAS_BEEN_ERASED, 1
 
-;write the current buffer to flash
-	ldi R2, 0b00000101 ;enable SPM, write mode
-	out SPMCSR, R2
-	spm ;write the page
-
-wait_write_complete:
-	sbic SPMCSR, 0 ;skip next instruction if bit 0 of SPMCSR is cleared
-	rjmp wait_write_complete ;if SPM is still going, keep waiting
-
-;check if bootloading is done
-	cpi R5, 1 ;check if last serial byte was read successfully 
-	breq exit_bootloader ;exit if last serial read was unsuccessful (all data has been transfered)
-	cpi R3, NUM_PAGES ;check if we've written all flash except the bootloader
-	brsh exit_bootloader ;exit if max page number is reached
-
-;write another page if bootloading is not done	
-	inc R3 ;otherwise, write another page
-	inc Z ;increment Z here since we didn't do it at the end of the last buffer load
-	rjmp update_next_page
+;restart main loop
+	rjmp receive_word
 
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                exit bootloader
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 exit_bootloader:
 	cbi PORTB, LED_PIN ;turn off LED to indicate we're no longer in the bootloader
