@@ -33,6 +33,9 @@
 	;might need to delete check_if_queue_full just because nothing ever jumps to it
 ;IVE SO FAR GOT NO WAY TO WRITE A PARTIALLY FILLED BUFFER TO THE FLASH
 	;hint: right now you're not doing ANY spm if theres no data in the queue... but the only spm operation that requires the queue is filling the buffer!
+	;buffer fill can occur when (buffer is not full && queue is not empty)
+	;an erase can occur when: (buffer is full || (queue is empty && we're done receiving data))
+	;a write can occur when: (erase can occur && erase is done)
 ;EVERYTHING IS UNTESTED (of course)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
@@ -61,7 +64,7 @@
 .EQU BAUD_RATE = 0 
 
 ;queue definitions
-.EQU QUEUE_END = 2000 ;number of bytes in queue (not words!)
+.EQU QUEUE_END = 2048 ;number of bytes in queue (not words!)
 .DEF HEAD = X ;head of circular queue (address in sram to place the next word of data)
 .DEF HEAD_LO = 
 .DEF HEAD_HI =
@@ -188,7 +191,7 @@ check_if_queue_full:
 ;check if (HEAD + 2) % QUEUE_END == TAIL
 	cp GENERAL_PURPOSE_REG_1, TAIL_LO ;check lo byte of incremented head copy
 	cpc GENERAL_PURPOSE_REG_2, TAIL_HI ;check if head is at end of queue (cpc instruction works in this context because it only sets the z flag if z was already 1)
-	breq check_if_queue_empty ;queue is full, lets do flash stuff but without requesting another byte
+	breq check_if_spm_done ;queue is full, lets do flash stuff but without requesting another byte
 
 ;the queue is not full, so we can request another word from the sender
 	send_byte REQUEST_NEXT_WORD
@@ -200,14 +203,14 @@ check_if_queue_full:
 ;                         figure out how to update flash
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-check_if_queue_empty:
+check_if_spm_done:
+	sbic SPMCSR, 0 ;check if spm is still going, skip next instruction if it's not
+	rjmp receive_word ;we can't do any spm so get the next word instead
+
+;check if the queue is empty
 	cp HEAD_LO, TAIL_LO ;yet another 16 bit compare, this time checking if HEAD == TAIL
 	cpc HEAD_HI, TAIL_HI ;compare with carry (so that result of lo byte cp is taken into account)
 	breq receive_word ;the queue is empty so we need to get another word in there (can't update flash with no queued words) 
-
-;check if we can do spm
-	sbic SPMCSR, 0 ;check if spm is still going, skip next instruction if it's not
-	rjmp receive_word ;we can't do any spm so get the next word instead
 
 ;check if page buffer is full yet
 	cpi CURRENT_PAGE_BUFFER_SIZE, PAGE_LENGTH 
@@ -233,6 +236,9 @@ check_if_queue_empty:
 ;reset all the variables needed to do another spm
 	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
 	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
+
+;restart main loop
+	rjmp receive_word
 
 
 
