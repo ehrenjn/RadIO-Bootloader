@@ -11,17 +11,14 @@
 	;also makes interrupts unable to be invoked from bootloader (which we're disabling anyway)
 	;also makes application code unable to read bootloader code
 
-;MAKE SURE YOU'RE READING THE RIGHT PIN
+;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
 ;MAKE SURE YOU INIT EVERYTHING YOU NEED TO (BASICALLY clr EVERYTHING)
-;THIS BECAUSE OF HOW THE RECEIVING WORKS WE MIGHT ACCIDENTLY TOSS IN 1-2 EXTRA NULL BYTES AT THE END OF APPLICATION MEMORY, BE AWARE OF THIS WHILE TESTING
+;WE MIGHT ACCIDENTLY TOSS IN 1-2 EXTRA NULL BYTES AT THE END OF APPLICATION MEMORY BECAUSE OF HOW THE RECEIVING WORKS, BE AWARE OF THIS WHILE TESTING
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 ;DONT THINK NUM_PAGES WILL EVER ACTUALLY GET USED ANYWHERE
 ;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
-;SHOULD I ACTUALLY KEEP TRACK OF HOW MANY PAGES HAVE BEEN WRITTEN AND EXIT IF WE REACH THE MAX?
-	;I guess the best place to add this code would be the beginning of erase (just go into error mode and send a byte that says "tried to erase bootloader section" or something)
-	;COULD ALSO JUST ADD THIS TO PYTHON SCRIPT... but then the program itself wouldnt be safe, and this would be good for bug testing
 ;FINISH DEFINITIONS
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
@@ -47,6 +44,7 @@
 ;USART definitions and transmission bytes
 .EQU REQUEST_NEXT_WORD = 'w' ;asks sender for next word of data
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
+.EQU ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR = 'o' ;tells sender that the program that is being bootloaded is too long, or the bootloader messed up and tried to overwrite it's own memory
 .EQU BAUD_RATE = 0 
 .DEF USART_SEND_REG = 
 
@@ -61,17 +59,17 @@
 
 ;definitions for spm operations
 .EQU PAGE_LENGTH = 64
-.EQU NUM_PAGES = 252 ;not 256 because last 4 pages are the bootloader itself
 .DEF CURRENT_PAGE_BUFFER_SIZE = R2 ;keeps track of how many words we've inserted into the page buffer 
 .DEF PAGE_HAS_BEEN_ERASED = R3 ;1 if the current page has been erased, 0 otherwise
 
-;other register definitions
+.EQU ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN = SMALLBOOTSTART ;bootloader is not allowed to write to this address or beyond (or else it would destroy it's own code)
 .DEF LAST_BUFFERED_WORD_ADDR = Z ;address to place the LAST word that WAS inserted into the page buffer (last word instead of current word because I'm incrementing this one register to do all buffering/erasing/writing which means I need it to be 63 when I'm erasing/writing the 0th page instead of 64)
-.DEF LAST_BUFFERED_WORD_LO = R30
-.DEF LAST_BUFFERED_WORD_HI = R31
+.DEF LAST_BUFFERED_WORD_ADDR_LO = R30
+.DEF LAST_BUFFERED_WORD_ADDR_HI = R31
 .DEF CURRENT_WORD_LO = R0 ;when adding a word to the page buffer we have to address it using R1:R0 
 .DEF CURRENT_WORD_HI = R1
 
+;other register definitions
 .DEF DONE_RECEIVING_DATA = R5 ;stores a 1 if we're done receiving data, 0 otherwise
 .DEF QUEUE_IS_FULL = R6 ;store a 1 if the queue is full, 0 otherwise
 
@@ -102,8 +100,8 @@
 	sbi PORTB, LED_PIN ;turn LED on
 
 ;set up variables for program loading
-	ser LAST_BUFFERED_WORD_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
-	ser LAST_BUFFERED_WORD_HI ;last word that was put in the page buffer was -1
+	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
+	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
 	clr R3 ;current page number = 0
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
@@ -253,6 +251,17 @@ fill_page_buffer:
 
 erase_page:
 
+;check if we're trying to overwrite the bootloader itself
+	ldi GENERAL_PURPOSE_REG_1, lo_byte ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	cp LAST_BUFFERED_WORD_ADDR_LO, GENERAL_PURPOSE_REG_1 ;compare LAST_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	ldi GENERAL_PURPOSE_REG_1, hi_byte ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	cpc LAST_BUFFERED_WORD_ADDR_HI, GENERAL_PURPOSE_REG_1
+	
+;if we're trying to overwrite the bootloader then throw an error
+	ldi USART_SEND_REG, ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR ;prepare error byte for sending
+	brsh error ;if LAST_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
+
+;erase the page
 	ldi GENERAL_PURPOSE_REG_1, 0b00000011 ;Enable SPM, page erase mode
 	out SPMCSR, GENERAL_PURPOSE_REG_1
 	spm ;erase the page
@@ -341,6 +350,8 @@ wait_for_byte\@:
 	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
 	ldi @1, 1 ;if bit 9 of data was a 1, record it
 	in @0, UDR0 ;read byte from USART
+
+.ENDMACRO
 
 
 
