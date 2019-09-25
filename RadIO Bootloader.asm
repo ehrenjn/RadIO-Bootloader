@@ -12,14 +12,12 @@
 	;also makes application code unable to read bootloader code
 
 ;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
-;MAKE SURE YOU INIT EVERYTHING YOU NEED TO (BASICALLY clr EVERYTHING)
 ;WE MIGHT ACCIDENTLY TOSS IN 1-2 EXTRA NULL BYTES AT THE END OF APPLICATION MEMORY BECAUSE OF HOW THE RECEIVING WORKS, BE AWARE OF THIS WHILE TESTING
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
-;DONT THINK NUM_PAGES WILL EVER ACTUALLY GET USED ANYWHERE
 ;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
-;FINISH DEFINITIONS
+;EVERYTHING IS UNTESTED (obviously)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -46,16 +44,17 @@
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
 .EQU ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR = 'o' ;tells sender that the program that is being bootloaded is too long, or the bootloader messed up and tried to overwrite it's own memory
 .EQU BAUD_RATE = 0 
-.DEF USART_SEND_REG = 
+.DEF USART_SEND_REG = R6
 
 ;queue definitions
 .EQU QUEUE_END = 2048 ;number of bytes in queue (not words!)
 .DEF HEAD = X ;head of circular queue (address in sram to place the next word of data)
-.DEF HEAD_LO = 
-.DEF HEAD_HI =
+.DEF HEAD_LO = R26
+.DEF HEAD_HI = R27
 .DEF TAIL = Y ;tail of queue (address in sram to find next queued word)
-.DEF TAIL_LO = 
-.DEF TAIL_HI =
+.DEF TAIL_LO = R28
+.DEF TAIL_HI = R29
+.DEF QUEUE_IS_FULL = R5 ;store a 1 if the queue is full, 0 otherwise
 
 ;definitions for spm operations
 .EQU PAGE_LENGTH = 64
@@ -70,11 +69,9 @@
 .DEF CURRENT_WORD_HI = R1
 
 ;other register definitions
-.DEF DONE_RECEIVING_DATA = R5 ;stores a 1 if we're done receiving data, 0 otherwise
-.DEF QUEUE_IS_FULL = R6 ;store a 1 if the queue is full, 0 otherwise
-
-.DEF GENERAL_PURPOSE_REG_1 = 
-.DEF GENERAL_PURPOSE_REG_2 = 
+.DEF DONE_RECEIVING_DATA = R4 ;stores a 1 if we're done receiving data, 0 otherwise
+.DEF GENERAL_PURPOSE_REG_1 = R7
+.DEF GENERAL_PURPOSE_REG_2 = R8
 .DEF GENERAL_PURPOSE_WORD_REG = GENERAL_PURPOSE_REG_2: GENERAL_PURPOSE_REG_1
 
 
@@ -102,18 +99,26 @@
 ;set up variables for program loading
 	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
 	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
-	clr R3 ;current page number = 0
+	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
+	clr PAGE_HAS_BEEN_ERASED ;have erased a page yet
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
+;init queue to be empty
+	clr HEAD_LO ;place first piece of data at 0
+	clr HEAD_HI
+	clr TAIL_LO ;the first address to read data from is 0
+	clr TAIL_HI
+	clr QUEUE_IS_FULL ;queue aint full
+
 ;init USART
-	ldi R4, BAUD_RATE_HI 
-	out UBRR0H, R4 ;init baud rate hi
-	ldi R4, BAUD_RATE_LO
-	out UBRR0L, R4 ;init baud rate lo
-	ldi R4, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
-	out UCSR0B, R4 ;save USART setting
-	ldi R4, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
-	out UCSR0C, R4
+	ldi GENERAL_PURPOSE_REG_1, hi_byte BAUD_RATE
+	out UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
+	ldi GENERAL_PURPOSE_REG_1, lo_byte BAUD_RATE
+	out UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
+	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
+	out UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
+	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
+	out UCSR0C, GENERAL_PURPOSE_REG_1
 
 ;request first word of data
 	ldi USART_SEND_REG, REQUEST_NEXT_WORD
