@@ -17,7 +17,8 @@
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 ;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
-;HAD TO GET RID OF \@ STUFF, MAKE SURE MACRO LABELS WORK
+;HAD TO GET RID OF \@ STUFF, MAKE SURE MACRO LABELS WORK, MAKE SURE THOSE STILL WORK LATER
+;HAVE TO FIX QUEUE TO START AT 0x100
 ;EVERYTHING IS UNTESTED (obviously)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
@@ -89,12 +90,17 @@
 send_byte:
 
 wait_for_empty_transmit_buffer:
-	sbis UCSR0A, 5 ;check if transmit data register is empty
+	lds TEMP_REG, UCSR0A ;can't use sbis on all IO ports, so I have to fill the temp register and do sbrs
+	sbrs TEMP_REG, 5 ;check if transmit data register is empty
 	rjmp wait_for_empty_transmit_buffer ;if full, keep waiting
 
+;clear 9th bit
+	lds TEMP_REG, UCSR0B ;can't use cbi on this IO register
+	andi TEMP_REG, 0b11111110 ;always set 9th bit to 0, it's only used when receiving data
+	sts UCSR0B, TEMP_REG ;update 9th bit
+
 ;send data
-	cbi UCSR0B, 0 ;always set 9th bit to 0, it's only used when receiving data
-	out UDR0, USART_SEND_REG ;begin sending
+	sts UDR0, USART_SEND_REG ;again, can't use OUT instruction because usart registers are above 0x3f
 
 ;return
 	ret
@@ -105,19 +111,24 @@ wait_for_empty_transmit_buffer:
 ;		1: register in which to save the 9th bit of data
 .MACRO receive_byte
 
-wait_for_byte:	
-	sbis UCSR0A, 7 ;see if there is some unread data in USART 
+wait_for_byte:
+	lds TEMP_REG, UCSR0A ;grab status reg
+	sbrs TEMP_REG, 7 ;see if there is some unread data in USART 
 	rjmp wait_for_byte ;if theres no unread data then keep waiting
 
 ;make sure there were no errors
-	in USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an asap error
+	lds USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an error asap 
 	andi USART_SEND_REG, 0b00011100 ;mask out all bits except errors
-	brne error ;throw an error if we have any error bits
+	breq read_received_data ;if theres no error we can just read the data 
 
-;read received data
-	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
+;throw an error if we have any error bits
+	rjmp error ;couldn't just do a brne last instruction because brne can only travel +-64 instructions
+
+read_received_data:
+	lds TEMP_REG, UCSR0B ;grab status reg that contains 9th bit of data
+	sbrc TEMP_REG, 1 ;check if bit 9 of data is a 1
 	ldi @1, 1 ;if bit 9 of data was a 1, record it
-	in @0, UDR0 ;read byte from USART
+	lds @0, UDR0 ;read byte from USART
 
 .ENDMACRO
 
@@ -194,13 +205,13 @@ return:
 
 ;init USART
 	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_RATE)
-	out UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
+	sts UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
 	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_RATE)
-	out UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
+	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
 	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
-	out UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
+	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
 	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
-	out UCSR0C, GENERAL_PURPOSE_REG_1
+	sts UCSR0C, GENERAL_PURPOSE_REG_1
 
 ;request first word of data
 	ldi USART_SEND_REG, REQUEST_NEXT_WORD
@@ -281,7 +292,8 @@ start_queue_full_check:
 
 
 check_if_spm_done:
-	sbic SPMCSR, 0 ;check if spm is still going, skip next instruction if it's not
+	lds TEMP_REG, SPMCSR ;load spm status reg
+	sbrc TEMP_REG, 0 ;check if spm is still going, skip next instruction if it's not
 	rjmp receive_word ;we can't do any spm so get the next word instead
 
 ;if the old page has been erased, write the new page 
@@ -324,7 +336,9 @@ fill_page_buffer:
 	adiw LAST_BUFFERED_WORD_ADDR, 1 ;increase this BEFORE adding to the buffer because spm instruction needs the address for the current word in Z to work
 
 ;add word to page buffer
-	sbi SPMCSR, 0 ;enable SPM, page buffer fill mode
+	lds TEMP_REG, SPMCSR ;get spm reg
+	ori TEMP_REG, 0b00000001 ;set bit 0 
+	sts SPMCSR, TEMP_REG ;enable SPM, page buffer fill mode
 	spm ;add word to temporary page buffer
 
 ;restart main loop
