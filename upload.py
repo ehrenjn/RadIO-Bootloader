@@ -46,15 +46,15 @@ def invalid_write():
 
 
 def is_usart_error_byte(byte):
-    return byte <= 3
+    return byte < 32
 
 def bit_n(byte, n):
     return (byte & (1 << n)) != 0
 
 def parse_usart_error(error_byte):
-    if bit_n(error_byte, 1): #data overrun
+    if bit_n(error_byte, 3): #data overrun
         print("ERROR: USART Data OverRun: the bootloader received a new byte while the USART buffer was already full")
-    if bit_n(error_byte, 2): #frame error
+    if bit_n(error_byte, 4): #frame error
         print("ERROR: USART Frame Error: the bootloader received one or more invalid start/stop bits")
     return False
 
