@@ -17,8 +17,6 @@
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 ;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
-;HAD TO GET RID OF \@ STUFF, MAKE SURE MACRO LABELS WORK, MAKE SURE THOSE STILL WORK LATER
-;HAVE TO FIX QUEUE TO START AT 0x100
 ;EVERYTHING IS UNTESTED (obviously)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
