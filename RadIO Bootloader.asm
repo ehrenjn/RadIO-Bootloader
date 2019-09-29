@@ -16,7 +16,7 @@
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
-;EVERYTHING IS UNTESTED (obviously)
+;HAVE TO FIX QUEUE AGAIN BECAUSE RIGHT NOW IT'S CUTTING THE STACK OFF
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -44,8 +44,9 @@
 #define USART_SEND_REG R20
 
 ;queue definitions
+.EQU STACK_SIZE = 20 ;need to know how big the stack is so the queue doesn't wipe it out (also needs to be a even number so that the queue doesn't get in a weird state)
 .EQU QUEUE_START = 0x100 ;sram only actually starts at 0x100, before that is memory mapped stuff
-.EQU QUEUE_END = 0x900 ;sram contains 2048 (0x800) bytes
+.EQU QUEUE_END = 0x900 - STACK_SIZE ;sram contains 2048 (0x800) bytes (need to subtract stack size so that the queue doesn't destroy the stack)
 #define HEAD X ;head of circular queue (address in sram to place the next word of data)
 #define HEAD_LO R26
 #define HEAD_HI R27
@@ -123,6 +124,7 @@ return:
 
 ;disable all interrupts so currently bootloaded program can't interrupt bootloading process
 	cli
+	CALL send_byte ;DELETE THIS LINE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 ;check if we're loading a program
 	cbi DDRB, BTN_IN_PIN ;set the proper pin as input (should be default behavior anyway)
