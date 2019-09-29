@@ -82,6 +82,90 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                             general purpose macros
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;args: word: word to find lo byte of
+;return: lo byte of arg 1
+#define lo_byte(word) (word & 0xFF)
+
+;args: word: word to find hi byte of
+;return: hi byte of input
+#define hi_byte(word) (word >> 8)
+
+
+
+;args: 	0: register containing hi byte of input word
+;		1: register containing lo byte of input word
+;		2: immediate word to compare @0:@1 to
+;		3: immediate word to reset the registers to
+;return: if @0:@1 == @2 then @0:@1 is set to @3. otherwise, nothing happens
+.MACRO reset_word_if_equal
+
+;check if input word should be cleared
+	cpi @1, lo_byte(@2) ;check lo byte of input registers
+	brne return ;return if lo byte register differs from comparison word
+	cpi @0, hi_byte(@2) ;can't use cpc instruction because I'm comparing to an immediate 
+	brne return ;words aren't the same, return
+
+;clear the input registers
+	ldi @1, lo_byte(@3)
+	ldi @0, hi_byte(@3)
+
+return:
+
+.ENDMACRO
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                initialization
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;disable all interrupts so currently bootloaded program can't interrupt bootloading process
+	cli
+
+;check if we're loading a program
+	cbi DDRB, BTN_IN_PIN ;set the proper pin as input (should be default behavior anyway)
+	nop ;must wait one clock cycle for input register to update after setting pins as input
+	sbic PINB, BTN_IN_PIN ;if pin is high (button is pressed) then enter the bootloader
+	rjmp exit_bootloader ;exit bootloader if button is not pressed
+
+;turn on LED to indicate we're in the bootloader
+	sbi DDRB, LED_PIN ;set LED_PIN as output
+	sbi PORTB, LED_PIN ;turn LED on
+
+;set up variables for program loading
+	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
+	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
+	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
+	clr PAGE_HAS_BEEN_ERASED ;have erased a page yet
+	clr DONE_RECEIVING_DATA ;not done receiving data
+
+;init queue to be empty
+	clr HEAD_LO ;place first piece of data at 0
+	clr HEAD_HI
+	clr TAIL_LO ;the first address to read data from is 0
+	clr TAIL_HI
+	clr QUEUE_IS_FULL ;queue aint full
+
+;init USART
+	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_RATE)
+	sts UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
+	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_RATE)
+	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
+	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
+	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
+	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
+	sts UCSR0C, GENERAL_PURPOSE_REG_1
+
+;request first word of data
+	ldi USART_SEND_REG, REQUEST_NEXT_WORD
+	rcall send_byte
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                           USART macros and functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -131,91 +215,6 @@ read_received_data:
 
 .ENDMACRO
 
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                             general purpose macros
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;args: word: word to find lo byte of
-;return: lo byte of arg 1
-#define lo_byte(word) (word & 0xFF)
-
-;args: word: word to find hi byte of
-;return: hi byte of input
-#define hi_byte(word) (word >> 8)
-
-
-
-;args: 	0: register containing hi byte of input word
-;		1: register containing lo byte of input word
-;		2: immediate word to compare @0:@1 to
-;		3: immediate word to reset the registers to
-;return: if @0:@1 == @2 then @0:@1 is set to @3. otherwise, nothing happens
-.MACRO reset_word_if_equal
-
-;check if input word should be cleared
-	cpi @1, lo_byte(@2) ;check lo byte of input registers
-	brne return ;return if lo byte register differs from comparison word
-	cpi @0, hi_byte(@2) ;can't use cpc instruction because I'm comparing to an immediate 
-	brne return ;words aren't the same, return
-
-;clear the input registers
-	ldi @1, lo_byte(@3)
-	ldi @0, hi_byte(@3)
-
-return:
-
-.ENDMACRO
-
-
-
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                                initialization
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;disable all interrupts so currently bootloaded program can't interrupt bootloading process
-	cli
-
-;check if we're loading a program
-	cbi DDRB, BTN_IN_PIN ;set the proper pin as input (should be default behavior anyway)
-	nop ;must wait one clock cycle for input register to update after setting pins as input
-	sbic PINB, BTN_IN_PIN ;if pin is high (button is pressed) then enter the bootloader
-	rjmp exit_bootloader ;exit bootloader if button is not pressed
-
-;turn on LED to indicate we're in the bootloader
-	sbi DDRB, LED_PIN ;set LED_PIN as output
-	sbi PORTB, LED_PIN ;turn LED on
-
-;set up variables for program loading
-	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
-	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
-	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
-	clr PAGE_HAS_BEEN_ERASED ;have erased a page yet
-	clr DONE_RECEIVING_DATA ;not done receiving data
-
-;init queue to be empty
-	clr HEAD_LO ;place first piece of data at 0
-	clr HEAD_HI
-	clr TAIL_LO ;the first address to read data from is 0
-	clr TAIL_HI
-	clr QUEUE_IS_FULL ;queue aint full
-
-;init USART
-	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_RATE)
-	sts UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
-	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_RATE)
-	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
-	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
-	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
-	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
-	sts UCSR0C, GENERAL_PURPOSE_REG_1
-
-;request first word of data
-	ldi USART_SEND_REG, REQUEST_NEXT_WORD
-	rcall send_byte
 
 
 
