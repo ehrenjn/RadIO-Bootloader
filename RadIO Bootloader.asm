@@ -47,7 +47,8 @@
 #define USART_SEND_REG R20
 
 ;queue definitions
-.EQU QUEUE_END = 2048 ;number of bytes in queue (not words!)
+.EQU QUEUE_START = 0x100 ;sram only actually starts at 0x100, before that is memory mapped stuff
+.EQU QUEUE_END = 0x900 ;sram contains 2048 (0x800) bytes
 #define HEAD X ;head of circular queue (address in sram to place the next word of data)
 #define HEAD_LO R26
 #define HEAD_HI R27
@@ -151,8 +152,9 @@ read_received_data:
 ;args: 	0: register containing hi byte of input word
 ;		1: register containing lo byte of input word
 ;		2: immediate word to compare @0:@1 to
-;return: if @0:@1 == @2 then @0:@1 is cleared to 0. otherwise, nothing happens
-.MACRO clear_word_if_equal
+;		3: immediate word to reset the registers to
+;return: if @0:@1 == @2 then @0:@1 is set to @3. otherwise, nothing happens
+.MACRO reset_word_if_equal
 
 ;check if input word should be cleared
 	cpi @1, lo_byte(@2) ;check lo byte of input registers
@@ -161,8 +163,8 @@ read_received_data:
 	brne return ;words aren't the same, return
 
 ;clear the input registers
-	clr @0
-	clr @1
+	ldi @1, lo_byte(@3)
+	ldi @0, hi_byte(@3)
 
 return:
 
@@ -240,7 +242,7 @@ receive_word:
 	st HEAD+, CURRENT_WORD_LO ;also store 2nd byte and increment
 
 ;reset head to 0 if it has reached the end of the queue
-	clear_word_if_equal HEAD_HI, HEAD_LO, QUEUE_END
+	reset_word_if_equal HEAD_HI, HEAD_LO, QUEUE_END, QUEUE_START
 
 
 
@@ -267,7 +269,7 @@ start_queue_full_check:
 	adiw GENERAL_PURPOSE_WORD_REG, 2 ;increase by 2
 
 ;loop back to 0 if HEAD+2 reaches the end of the queue
-	clear_word_if_equal GENERAL_PURPOSE_REG_2, GENERAL_PURPOSE_REG_1, QUEUE_END
+	reset_word_if_equal GENERAL_PURPOSE_REG_2, GENERAL_PURPOSE_REG_1, QUEUE_END, QUEUE_START
 
 ;check if (HEAD + 2) % QUEUE_END == TAIL
 	cp GENERAL_PURPOSE_REG_1, TAIL_LO ;check lo byte of incremented head copy
@@ -329,7 +331,7 @@ fill_page_buffer:
 	ld CURRENT_WORD_LO, TAIL+ ;dequeue 2nd byte and move tail forward
 
 ;loop tail back to beginning of queue if need be
-	clear_word_if_equal TAIL_HI, TAIL_LO, QUEUE_END
+	reset_word_if_equal TAIL_HI, TAIL_LO, QUEUE_END, QUEUE_START
 
 ;increase word counts
 	inc CURRENT_PAGE_BUFFER_SIZE ;track the size of the page buffer
