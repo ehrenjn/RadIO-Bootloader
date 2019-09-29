@@ -17,6 +17,7 @@
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 ;MIGHT HAVE TO CLEAR SOME USART REGISTERS IN THE ERROR FUNCTION (SO THAT IM ABLE TO SEND DATA)
+;HAD TO GET RID OF \@ STUFF, MAKE SURE MACRO LABELS WORK
 ;EVERYTHING IS UNTESTED (obviously)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
@@ -33,8 +34,6 @@
 ;first fill the page buffer, then erase the old page, then write the new page.
 
 
-.INCLUDE iodefs.asm
-
 ;gpio pins
 .EQU BTN_IN_PIN = 0 ;pin that bootloader button is on
 .EQU LED_PIN = 0 ;pin that the general purpose LED is on
@@ -44,38 +43,121 @@
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
 .EQU ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR = 'o' ;tells sender that the program that is being bootloaded is too long, or the bootloader messed up and tried to overwrite it's own memory
 .EQU BAUD_RATE = 0 
-.DEF USART_SEND_REG = R6
+#define USART_SEND_REG R20
 
 ;queue definitions
 .EQU QUEUE_END = 2048 ;number of bytes in queue (not words!)
-.DEF HEAD = X ;head of circular queue (address in sram to place the next word of data)
-.DEF HEAD_LO = R26
-.DEF HEAD_HI = R27
-.DEF TAIL = Y ;tail of queue (address in sram to find next queued word)
-.DEF TAIL_LO = R28
-.DEF TAIL_HI = R29
-.DEF QUEUE_IS_FULL = R5 ;store a 1 if the queue is full, 0 otherwise
+#define HEAD X ;head of circular queue (address in sram to place the next word of data)
+#define HEAD_LO R26
+#define HEAD_HI R27
+#define TAIL Y ;tail of queue (address in sram to find next queued word)
+#define TAIL_LO R28
+#define TAIL_HI R29
+#define QUEUE_IS_FULL R19 ;store a 1 if the queue is full, 0 otherwise
 
 ;definitions for spm operations
 .EQU PAGE_LENGTH = 64
-.DEF CURRENT_PAGE_BUFFER_SIZE = R2 ;keeps track of how many words we've inserted into the page buffer 
-.DEF PAGE_HAS_BEEN_ERASED = R3 ;1 if the current page has been erased, 0 otherwise
+#define CURRENT_PAGE_BUFFER_SIZE R16 ;keeps track of how many words we've inserted into the page buffer 
+#define PAGE_HAS_BEEN_ERASED R17 ;1 if the current page has been erased, 0 otherwise
 
 .EQU ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN = SMALLBOOTSTART ;bootloader is not allowed to write to this address or beyond (or else it would destroy it's own code)
-.DEF LAST_BUFFERED_WORD_ADDR = Z ;address to place the LAST word that WAS inserted into the page buffer (last word instead of current word because I'm incrementing this one register to do all buffering/erasing/writing which means I need it to be 63 when I'm erasing/writing the 0th page instead of 64)
-.DEF LAST_BUFFERED_WORD_ADDR_LO = R30
-.DEF LAST_BUFFERED_WORD_ADDR_HI = R31
-.DEF CURRENT_WORD_LO = R0 ;when adding a word to the page buffer we have to address it using R1:R0 
-.DEF CURRENT_WORD_HI = R1
+#define LAST_BUFFERED_WORD_ADDR Z ;address to place the LAST word that WAS inserted into the page buffer (last word instead of current word because I'm incrementing this one register to do all buffering/erasing/writing which means I need it to be 63 when I'm erasing/writing the 0th page instead of 64)
+#define LAST_BUFFERED_WORD_ADDR_LO R30
+#define LAST_BUFFERED_WORD_ADDR_HI R31
+#define CURRENT_WORD_LO R0 ;when adding a word to the page buffer we have to address it using R1:R0 
+#define CURRENT_WORD_HI R1
 
 ;other register definitions
-.DEF DONE_RECEIVING_DATA = R4 ;stores a 1 if we're done receiving data, 0 otherwise
-.DEF GENERAL_PURPOSE_REG_1 = R7
-.DEF GENERAL_PURPOSE_REG_2 = R8
-.DEF GENERAL_PURPOSE_WORD_REG = GENERAL_PURPOSE_REG_2: GENERAL_PURPOSE_REG_1
+#define DONE_RECEIVING_DATA R18 ;stores a 1 if we're done receiving data, 0 otherwise
+#define GENERAL_PURPOSE_REG_1 R24 ;using R24 and R25 because they're the only non X/Y/Z registers that can be used with an ADIW instruction
+#define GENERAL_PURPOSE_REG_2 R25 ;these 2 regs are for storing any random values
+#define GENERAL_PURPOSE_WORD_REG GENERAL_PURPOSE_REG_2: GENERAL_PURPOSE_REG_1
+#define TEMP_REG R21 ;used for storing values that will be used very soon, ie in an instruction or 2. I should always be able to easily know if this register is available or not just by glancing at nearby instructions
 
 
 .ORG SMALLBOOTSTART ;place this at the beginning of the smallest bootloader section (256 words large)
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                           USART macros and functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;args: USART_SEND_REG: byte to transmit
+send_byte:
+
+wait_for_empty_transmit_buffer:
+	sbis UCSR0A, 5 ;check if transmit data register is empty
+	rjmp wait_for_empty_transmit_buffer ;if full, keep waiting
+
+;send data
+	cbi UCSR0B, 0 ;always set 9th bit to 0, it's only used when receiving data
+	out UDR0, USART_SEND_REG ;begin sending
+
+;return
+	ret
+
+
+
+;args:	0: register in which to save the received byte
+;		1: register in which to save the 9th bit of data
+.MACRO receive_byte
+
+wait_for_byte:	
+	sbis UCSR0A, 7 ;see if there is some unread data in USART 
+	rjmp wait_for_byte ;if theres no unread data then keep waiting
+
+;make sure there were no errors
+	in USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an asap error
+	andi USART_SEND_REG, 0b00011100 ;mask out all bits except errors
+	brne error ;throw an error if we have any error bits
+
+;read received data
+	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
+	ldi @1, 1 ;if bit 9 of data was a 1, record it
+	in @0, UDR0 ;read byte from USART
+
+.ENDMACRO
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                             general purpose macros
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;args: word: word to find lo byte of
+;return: lo byte of arg 1
+#define lo_byte(word) (word & 0xFF)
+
+;args: word: word to find hi byte of
+;return: hi byte of input
+#define hi_byte(word) (word >> 8)
+
+
+
+;args: 	0: register containing hi byte of input word
+;		1: register containing lo byte of input word
+;		2: immediate word to compare @0:@1 to
+;return: if @0:@1 == @2 then @0:@1 is cleared to 0. otherwise, nothing happens
+.MACRO clear_word_if_equal
+
+;check if input word should be cleared
+	cpi @1, lo_byte(@2) ;check lo byte of input registers
+	brne return ;return if lo byte register differs from comparison word
+	cpi @0, hi_byte(@2) ;can't use cpc instruction because I'm comparing to an immediate 
+	brne return ;words aren't the same, return
+
+;clear the input registers
+	clr @0
+	clr @1
+
+return:
+
+.ENDMACRO
+
+
 
 
 
@@ -111,9 +193,9 @@
 	clr QUEUE_IS_FULL ;queue aint full
 
 ;init USART
-	ldi GENERAL_PURPOSE_REG_1, hi_byte BAUD_RATE
+	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_RATE)
 	out UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
-	ldi GENERAL_PURPOSE_REG_1, lo_byte BAUD_RATE
+	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_RATE)
 	out UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
 	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
 	out UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
@@ -158,7 +240,7 @@ receive_word:
 try_to_request_next_word:
 
 ;check if we're still receiving data
-	cp DONE_RECEIVING_DATA, 1 
+	cpi DONE_RECEIVING_DATA, 1 
 	brne start_queue_full_check ;start checking queue if we're not done receiving data
 
 ;disconnect from sender and don't try to request another word (we are done receiving data)
@@ -170,7 +252,7 @@ start_queue_full_check:
 	ldi QUEUE_IS_FULL, 1 ;assume the queue is full by default
 
 ;copy head and increase by 2
-	movw GENERAL_PURPOSE_WORD_REG, HEAD ;copy head
+	movw GENERAL_PURPOSE_REG_1, HEAD_LO ;copy head (movw makes you specify only lo registers)
 	adiw GENERAL_PURPOSE_WORD_REG, 2 ;increase by 2
 
 ;loop back to 0 if HEAD+2 reaches the end of the queue
@@ -257,9 +339,9 @@ fill_page_buffer:
 erase_page:
 
 ;check if we're trying to overwrite the bootloader itself
-	ldi GENERAL_PURPOSE_REG_1, lo_byte ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	ldi GENERAL_PURPOSE_REG_1, lo_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
 	cp LAST_BUFFERED_WORD_ADDR_LO, GENERAL_PURPOSE_REG_1 ;compare LAST_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
-	ldi GENERAL_PURPOSE_REG_1, hi_byte ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	ldi GENERAL_PURPOSE_REG_1, hi_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
 	cpc LAST_BUFFERED_WORD_ADDR_HI, GENERAL_PURPOSE_REG_1
 	
 ;if we're trying to overwrite the bootloader then throw an error
@@ -312,88 +394,3 @@ panic_forever: ;infinite loop
 exit_bootloader: ;clean exit
 	cbi PORTB, LED_PIN ;turn off LED to indicate we're no longer in the bootloader
 	jmp 0 ;start uploaded program
-
-
-
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                           USART macros and functions
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;args: USART_SEND_REG: byte to transmit
-send_byte:
-
-wait_for_empty_transmit_buffer:
-	sbis UCSR0A, 5 ;check if transmit data register is empty
-	rjmp wait_for_empty_transmit_buffer ;if full, keep waiting
-
-;send data
-	cbi UCSR0B, 0 ;always set 9th bit to 0, it's only used when receiving data
-	out UDR0, USART_SEND_REG ;begin sending
-
-;return
-	ret
-
-
-
-;args:	0: register in which to save the received byte
-;		1: register in which to save the 9th bit of data
-.MACRO receive_byte:
-
-wait_for_byte\@:	
-	sbis UCSR0A, 7 ;see if there is some unread data in USART 
-	rjmp wait_for_byte\@ ;if theres no unread data then keep waiting
-
-;make sure there were no errors
-	in USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an asap error
-	andi USART_SEND_REG, 0b00011100 ;mask out all bits except errors
-	lsr USART_SEND_REG, 2 ;shift errors into lower 3 bits (for convenience on the receiving end)
-	brne error ;throw an error if we have any error bits
-
-;read received data
-	sbic UCSR0B, 1 ;check if bit 9 of data is a 1
-	ldi @1, 1 ;if bit 9 of data was a 1, record it
-	in @0, UDR0 ;read byte from USART
-
-.ENDMACRO
-
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                             general purpose macros
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;args: 1: word to find lo byte of
-;return: lo byte of arg 1
-.MACRO lo_byte:
-	(@0 & 0xFF)
-.ENDMACRO
-
-;args: 1: word to find hi byte of
-;return: hi byte of input
-.MACRO hi_byte:
-	(@0 >> 8)
-.ENDMACRO
-
-
-
-;args: 	0: register containing hi byte of input word
-;		1: register containing lo byte of input word
-;		2: immediate word to compare @0:@1 to
-;return: if @0:@1 == @2 then @0:@1 is cleared to 0. otherwise, nothing happens
-.MACRO clear_word_if_equal:
-
-;check if input word should be cleared
-	cpi @1, lo_byte @2 ;check lo byte of input registers
-	brne return\@: ;return if lo byte register differs from comparison word
-	cpi @0, hi_byte @2 ;can't use cpc instruction because I'm comparing to an immediate 
-	brne return\@: ;words aren't the same, return
-
-;clear the input registers
-	clr @0
-	clr @1
-
-return\@: ;looks weird because I have to make every use of this macro spit out a unique label here
-
-.ENDMACRO
