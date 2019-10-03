@@ -33,14 +33,14 @@
 
 
 ;gpio pins
-.EQU BTN_IN_PIN = 0 ;pin that bootloader button is on
+.EQU BTN_IN_PIN = 1 ;pin that bootloader button is on
 .EQU LED_PIN = 0 ;pin that the general purpose LED is on
 
 ;USART definitions and transmission bytes
 .EQU REQUEST_NEXT_WORD = 'w' ;asks sender for next word of data
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
 .EQU ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR = 'o' ;tells sender that the program that is being bootloaded is too long, or the bootloader messed up and tried to overwrite it's own memory
-.EQU BAUD_RATE = 0 
+.EQU BAUD_RATE = 9600
 #define USART_SEND_REG R20
 
 ;queue definitions
@@ -73,9 +73,6 @@
 #define GENERAL_PURPOSE_REG_2 R25 ;these 2 regs are for storing any random values
 #define GENERAL_PURPOSE_WORD_REG GENERAL_PURPOSE_REG_2: GENERAL_PURPOSE_REG_1
 #define TEMP_REG R21 ;used for storing values that will be used very soon, ie in an instruction or 2. I should always be able to easily know if this register is available or not just by glancing at nearby instructions
-
-
-.ORG SMALLBOOTSTART ;place this at the beginning of the smallest bootloader section (256 words large)
 
 
 
@@ -119,17 +116,30 @@ return:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                pre-bootloader
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.ORG 0 ;throw in a tiny program as placeholder application code
+
+application_code: ;if we exit the bootloader without uploading anything then this will make us spin instead of executing 32k NOPs and restarting the bootloader
+	rjmp application_code
+
+
+.ORG SMALLBOOTSTART ;place the bootloader at the beginning of the smallest bootloader section (256 words large)
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                                initialization
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;disable all interrupts so currently bootloaded program can't interrupt bootloading process
 	cli
-	CALL send_byte ;DELETE THIS LINE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 ;check if we're loading a program
 	cbi DDRB, BTN_IN_PIN ;set the proper pin as input (should be default behavior anyway)
 	nop ;must wait one clock cycle for input register to update after setting pins as input
-	sbic PINB, BTN_IN_PIN ;if pin is high (button is pressed) then enter the bootloader
+	sbis PINB, BTN_IN_PIN ;if pin is high (button is pressed) then enter the bootloader
 	rjmp exit_bootloader ;exit bootloader if button is not pressed
 
 ;turn on LED to indicate we're in the bootloader
@@ -144,10 +154,10 @@ return:
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
 ;init queue to be empty
-	clr HEAD_LO ;place first piece of data at 0
-	clr HEAD_HI
-	clr TAIL_LO ;the first address to read data from is 0
-	clr TAIL_HI
+	ldi HEAD_LO, lo_byte(QUEUE_START) ;place first piece of data at QUEUE_START
+	ldi HEAD_HI, hi_byte(QUEUE_START)
+	ldi TAIL_LO, lo_byte(QUEUE_START) ;the first address to read data from is QUEUE_START
+	ldi TAIL_HI, hi_byte(QUEUE_START)
 	clr QUEUE_IS_FULL ;queue aint full
 
 ;init USART
@@ -160,9 +170,10 @@ return:
 	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
 	sts UCSR0C, GENERAL_PURPOSE_REG_1
 
-;request first word of data
+;request first word of data and wait for it to arrive
 	ldi USART_SEND_REG, REQUEST_NEXT_WORD
 	rcall send_byte
+	rjmp receive_word ;start waiting for first word
 
 
 
