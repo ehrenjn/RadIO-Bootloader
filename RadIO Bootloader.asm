@@ -323,8 +323,8 @@ check_if_spm_done:
 	brne fill_page_buffer ;the queue is not empty, so lets buffer the next word
 
 ;else if we're not done receiving data then we can't do any spm stuff (have to wait for more data to arrive)
-	cpi DONE_RECEIVING_DATA, 1
-	brne receive_word ;restart the main loop
+	sbrs DONE_RECEIVING_DATA, 0 ;kind of gross, only using sbrs/rjmp instead of cpi/brne because brne can't jump all the way to receive_word from here
+	rjmp receive_word ;restart the main loop
 
 ;else if theres some data in the page buffer we need to do one last page erase (since we already know theres no more data coming, we've buffered all we can, and no page erase has occured yet)
 	cpi CURRENT_PAGE_BUFFER_SIZE, 0
