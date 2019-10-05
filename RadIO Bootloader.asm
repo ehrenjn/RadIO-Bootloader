@@ -1,22 +1,22 @@
-;How to tell it to begin exeuction in bootloader section
-	;"the Boot Reset Fuse can be programmed so that the Reset Vector is pointing to the Boot Flash 
-	;	start address after a reset. In this case, the Boot Loader is started after a reset."
-	;basically just make the boot reset fuse = 0 
-	;	and it'll reset to whatever position is indicated by the BOOTSZ1 BOOTSZ0 fuses (the fuses that control where bootloader memory begins)
-	;	I want to make the smallest bootloader possible on the 328p: 256 words
-	;	to get a 256 word bootloader you set both BOOTSZ1 and BOOTSZ0 to 1
-;how to lock bootloader section from being accessed via application memory:
-	;set up the following lock bits: BLB12 = 0, BLB11 = 0
-	;this will make it impossible for any executing code to write to the bootloader section 
-	;also makes interrupts unable to be invoked from bootloader (which we're disabling anyway)
-	;also makes application code unable to read bootloader code
+;before uploading the bootloader the following fuses must be changed:
+	;BOOTRST must be *programmed* (set to 0)
+		;this fuse determines if the mcu begins exectution in the bootloader section instead of address 0
+	;BOOTSZ1 and BOOTSZ0 must be *unprogrammed* (set to 1)
+		;these two fuses control WHERE the bootloader section begins in memory
+		;setting them both to 1 creates the smallest bootloader space possible on the 328p (256 words)
+
+;it is reccomend to also set up the following lock bits after the bootloader is uploaded to stop application code from erasing the bootloader:
+	;*unprogram* BLB12 and BLB11 (set them to 0)
+		;this will make it impossible for any executing code to write to the bootloader section 
+		;also makes interrupts unable to be invoked from bootloader (which we're not using anyway)
+		;also makes application code unable to read bootloader code
+
 
 ;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
 ;WE MIGHT ACCIDENTLY TOSS IN 1-2 EXTRA NULL BYTES AT THE END OF APPLICATION MEMORY BECAUSE OF HOW THE RECEIVING WORKS, BE AWARE OF THIS WHILE TESTING
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
-;HAVE TO FIX QUEUE AGAIN BECAUSE RIGHT NOW IT'S CUTTING THE STACK OFF
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -150,7 +150,7 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
 	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
 	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
-	clr PAGE_HAS_BEEN_ERASED ;have erased a page yet
+	clr PAGE_HAS_BEEN_ERASED ;haven't erased a page yet
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
 ;init queue to be empty
