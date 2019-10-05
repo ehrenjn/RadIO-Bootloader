@@ -298,8 +298,10 @@ start_queue_full_check:
 
 ;if spm is done:
 	;buffer fill can occur when (buffer is not full && queue is not empty)
-	;an erase can occur when: (buffer is full || (queue is empty && we're done receiving data))
+	;an erase can occur when: (buffer is full || (queue is empty && we're done receiving data && theres something in the page buffer))
 	;a write can occur when: (erase can occur && erase is done)
+	;bootloader must exit when: (queue is empty && we're done receiving data && theres NOTHING in the page buffer)
+		;can't just keep track of when we did the final page write because theres a nasty edge condition where the application program size is a multiple of PAGE_LENGTH and then it gets hard to check when the current page write is our last
 
 
 check_if_spm_done:
@@ -320,12 +322,16 @@ check_if_spm_done:
 	cpc HEAD_HI, TAIL_HI ;compare with carry (so that result of lo byte cp is taken into account)
 	brne fill_page_buffer ;the queue is not empty, so lets buffer the next word
 
-;else if we're done receiving data then we need to start erasing (since we already know theres no more data coming, we've buffered all we can, and no page erase has occured yet)
+;else if we're not done receiving data then we can't do any spm stuff (have to wait for more data to arrive)
 	cpi DONE_RECEIVING_DATA, 1
-	breq erase_page
+	brne receive_word ;restart the main loop
 
-;else we can't do any spm
-	rjmp receive_word ;restart the main loop
+;else if theres some data in the page buffer we need to do one last page erase (since we already know theres no more data coming, we've buffered all we can, and no page erase has occured yet)
+	cpi CURRENT_PAGE_BUFFER_SIZE, 0
+	brne erase_page ;erase page if buffer isn't empty
+
+;else everything is done, we can exit the bootloader
+	rjmp exit_bootloader
 
 
 
