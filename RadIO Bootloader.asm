@@ -27,11 +27,6 @@
 	;ALSO UPDATE YOUR COMMENTS (ESPECIALLY AT THE END OF THE INTRO)
 ;YO I DONT THINK THE EDGE CASE WRITE THING ACTUALLY WORKS?? BUT IDK, TEST IT OUT A BIT, MAYBE ITS JUST NOT WRITING POST DISCONNECT BYTES??
 	;seems to erase but not write
-;DURING PAGE WRITE: "Other bits in the Z-pointer must be written to zero during this operation" !!!!!!!!!!!!!!!!!!!!
-	;CHANGE LAST_BUFFERED_WORD_ADDR TO NEXT_BUFFERED_WORD_ADDR
-;AHHHH YOUR NEW WAY OF ADDRESSING Z WONT WORK BECAUSE ALWAYS SUBTRACTING THE PAGE LENGTH WILL SUBTRACT TOO MUCH DATA ON THE LAST WRITE!!!
-	;INSTEAD YOU SHOULD USE CURRENT_PAGE_BUFFER_SIZE (make it count in bytes)
-	;or you can use some kind of bitmask if you find that easier, think about it
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -39,9 +34,9 @@
 ;flash must be addressed in the Z register using pages and words
 ;a word is 2 bytes long, there are 64 words per page
 ;there are 256 pages
-;when using Z to address a page, bits 13:6 specify a page and bits 5:0 specifify a word within that page
+;when using Z to address a page, bits 14:7 specify a page and bits 6:1 specifify a word within that page
 ;   R31     R30
-;xxpppppp ppwwwwww 
+;xppppppp pwwwwwwx 
 
 ;you can only write to the flash one page at a time
 ;first fill the page buffer, then erase the old page, then write the new page.
@@ -78,9 +73,9 @@
 #define PAGE_HAS_BEEN_ERASED R17 ;1 if the current page has been erased, 0 otherwise
 
 .EQU ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN = SMALLBOOTSTART ;bootloader is not allowed to write to this address or beyond (or else it would destroy it's own code)
-#define LAST_BUFFERED_WORD_ADDR Z ;address to place the LAST word that WAS inserted into the page buffer (last word instead of current word because I'm incrementing this one register to do all buffering/erasing/writing which means I need it to be 63 when I'm erasing/writing the 0th page instead of 64)
-#define LAST_BUFFERED_WORD_ADDR_LO R30
-#define LAST_BUFFERED_WORD_ADDR_HI R31
+#define NEXT_BUFFERED_WORD_ADDR Z ;address to place the next word (address must be in BYTES instead of words)
+#define NEXT_BUFFERED_WORD_ADDR_LO R30
+#define NEXT_BUFFERED_WORD_ADDR_HI R31
 #define CURRENT_WORD_LO R0 ;when adding a word to the page buffer we have to address it using R1:R0 
 #define CURRENT_WORD_HI R1
 
@@ -164,8 +159,8 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	sbi PORTB, LED_PIN ;turn LED on
 
 ;set up variables for program loading
-	clr LAST_BUFFERED_WORD_ADDR_HI ;set instead of clr because it needs to be 0 after the first word is added to the buffer
-	clr LAST_BUFFERED_WORD_ADDR_LO ;last word that was put in the page buffer was -2
+	clr NEXT_BUFFERED_WORD_ADDR_HI ;start buffering words at address 0
+	clr NEXT_BUFFERED_WORD_ADDR_LO 
 	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
 	clr PAGE_HAS_BEEN_ERASED ;haven't erased a page yet
 	clr DONE_RECEIVING_DATA ;not done receiving data
@@ -381,12 +376,12 @@ fill_page_buffer:
 ;increase word counts
 	ldi TEMP_REG, 2 ;we added 1 word (2 bytes)
 	add CURRENT_PAGE_BUFFER_SIZE, TEMP_REG ;track the size of the page buffer
-	adiw LAST_BUFFERED_WORD_ADDR, 2 ;increase by two because spm wants bit 0 of Z to always be 0 for some reason (so the word count is offset by 1 bit... you can think of this as just counting bytes instead of words)
+	adiw NEXT_BUFFERED_WORD_ADDR, 2 ;increase by two because spm wants bit 0 of Z to always be 0 for some reason (so the word count is offset by 1 bit... you can think of this as just counting bytes instead of words)
 
 ;DELPLS THIS TOO!!!!
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
 	rcall send_byte
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
 	rcall send_byte
 
 ;restart main loop
@@ -402,17 +397,17 @@ erase_page:
 
 ;check if we're trying to overwrite the bootloader itself
 	ldi GENERAL_PURPOSE_REG_1, lo_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
-	cp LAST_BUFFERED_WORD_ADDR_LO, GENERAL_PURPOSE_REG_1 ;compare LAST_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
+	cp NEXT_BUFFERED_WORD_ADDR_LO, GENERAL_PURPOSE_REG_1 ;compare NEXT_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
 	ldi GENERAL_PURPOSE_REG_1, hi_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
-	cpc LAST_BUFFERED_WORD_ADDR_HI, GENERAL_PURPOSE_REG_1
+	cpc NEXT_BUFFERED_WORD_ADDR_HI, GENERAL_PURPOSE_REG_1
 	
 ;if we're trying to overwrite the bootloader then throw an error
 	ldi USART_SEND_REG, ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR ;prepare error byte for sending
-	brsh error ;if LAST_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
+	brsh error ;if NEXT_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
 
 ;get NEXT_BUFFERED_WORD_ADDR to the proper address for erasing and writing
-	sub LAST_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;subtract to get back to current page (since the NEXT_BUFFERED_WORD_ADDR currently points to the 0th word of the next page)
-	sbci LAST_BUFFERED_WORD_ADDR_HI, 0 ;update high byte if need be
+	sub NEXT_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;subtract to get back to the beginning of the current page (erasing and writing both have to be done with an exact page address)
+	sbci NEXT_BUFFERED_WORD_ADDR_HI, 0 ;update high byte if need be
 
 ;erase the page
 	ldi GENERAL_PURPOSE_REG_1, 0b00000011 ;Enable SPM, page erase mode
@@ -429,9 +424,9 @@ erase_page:
 	ldi USART_SEND_REG, '-'
 	rcall send_byte
 ;DELPLS AGAIN
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
 	rcall send_byte
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
 	rcall send_byte
 
 ;restart main loop
@@ -445,15 +440,15 @@ erase_page:
 
 write_page:
 
-;write the current page indicated by LAST_BUFFERED_WORD_ADDR
+;write the current page indicated by NEXT_BUFFERED_WORD_ADDR
 	ldi GENERAL_PURPOSE_REG_1, 0b00000101 ;enable SPM, write mode
 	out SPMCSR, GENERAL_PURPOSE_REG_1
 	spm ;write the page
 
 ;set NEXT_BUFFERED_WORD_ADDR back to the proper value  
-	add LAST_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;we subtracted PAGE_LENGTH_BYTES when we erased the page, so now lets add them back
+	add NEXT_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;we subtracted PAGE_LENGTH_BYTES when we erased the page, so now lets add them back
 	clr TEMP_REG ;theres no add with immedate instruction so I have to use the temp reg
-	adc LAST_BUFFERED_WORD_ADDR_HI, TEMP_REG ;add the carry to hi byte
+	adc NEXT_BUFFERED_WORD_ADDR_HI, TEMP_REG ;add the carry to hi byte
 
 ;reset all the variables needed to do another spm
 	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
@@ -463,9 +458,9 @@ write_page:
 	ldi USART_SEND_REG, '+'
 	rcall send_byte
 ;DELPLS THIS TOO!!!!
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
 	rcall send_byte
-	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
 	rcall send_byte
 
 ;restart main loop
