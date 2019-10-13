@@ -27,6 +27,7 @@
 	;ALSO UPDATE YOUR COMMENTS (ESPECIALLY AT THE END OF THE INTRO)
 ;YO I DONT THINK THE EDGE CASE WRITE THING ACTUALLY WORKS?? BUT IDK, TEST IT OUT A BIT, MAYBE ITS JUST NOT WRITING POST DISCONNECT BYTES??
 	;seems to erase but not write
+;FOR SOME REASON BOOTLOADED PROGRAM DOESN'T SEEM TO START AS SOON WE EXIT THE BOOTLOADER? (have to reset to get it to start)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -72,7 +73,7 @@
 #define CURRENT_PAGE_BUFFER_SIZE R16 ;keeps track of how many words we've inserted into the page buffer 
 #define PAGE_HAS_BEEN_ERASED R17 ;1 if the current page has been erased, 0 otherwise
 
-.EQU ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN = SMALLBOOTSTART ;bootloader is not allowed to write to this address or beyond (or else it would destroy it's own code)
+.EQU ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN = SMALLBOOTSTART * 2 ;bootloader is not allowed to write to this address or beyond (or else it would destroy it's own code), also * 2 because it's specified in bytes instead of words (since that's how we address data when writing it to flash)
 #define NEXT_BUFFERED_WORD_ADDR Z ;address to place the next word (address must be in BYTES instead of words)
 #define NEXT_BUFFERED_WORD_ADDR_LO R30
 #define NEXT_BUFFERED_WORD_ADDR_HI R31
