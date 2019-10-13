@@ -18,6 +18,21 @@
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
 
+;FOR WHATEVER REASON ITS NOT WAITING FOR SPM TO BE DONE?? PERHAPS IM NOT DOING SPM RIGHT, LOOK AT IT AGAIN
+	;could just be that the memory reader is junked... maybe try loading a 1 instruction program instead 
+	;(init the direction stuff BEFORE you exit the bootloader so the app just turns the led on)
+	;OH WAIT BUT BAUD IS ONLY 2400 SO IT PROBABLY NEVER NEEDS TO WAIT TO DO SPM...
+		;put a loop right after an spm command that counts up in the temp reg and then sends the total once spm is done (max out count at 255) 
+;IF THIS DOUBLE Z THING WORKS OUT THEN ILL NEED TO DOUBLE THE ILLEGAL ADDRESS THING TOO...
+	;ALSO UPDATE YOUR COMMENTS (ESPECIALLY AT THE END OF THE INTRO)
+;YO I DONT THINK THE EDGE CASE WRITE THING ACTUALLY WORKS?? BUT IDK, TEST IT OUT A BIT, MAYBE ITS JUST NOT WRITING POST DISCONNECT BYTES??
+	;seems to erase but not write
+;DURING PAGE WRITE: "Other bits in the Z-pointer must be written to zero during this operation" !!!!!!!!!!!!!!!!!!!!
+	;CHANGE LAST_BUFFERED_WORD_ADDR TO NEXT_BUFFERED_WORD_ADDR
+;AHHHH YOUR NEW WAY OF ADDRESSING Z WONT WORK BECAUSE ALWAYS SUBTRACTING THE PAGE LENGTH WILL SUBTRACT TOO MUCH DATA ON THE LAST WRITE!!!
+	;INSTEAD YOU SHOULD USE CURRENT_PAGE_BUFFER_SIZE (make it count in bytes)
+	;or you can use some kind of bitmask if you find that easier, think about it
+
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
 
@@ -40,7 +55,9 @@
 .EQU REQUEST_NEXT_WORD = 'w' ;asks sender for next word of data
 .EQU REQUEST_DISCONNECT = 'd' ;tells sender to disconnect
 .EQU ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR = 'o' ;tells sender that the program that is being bootloaded is too long, or the bootloader messed up and tried to overwrite it's own memory
-.EQU BAUD_RATE = 9600
+.EQU BAUD_RATE = 2400 ;target baud rate
+.EQU OSC_FREQ = 16000000 ;clock rate of mcu
+.EQU BAUD_BITS = (OSC_FREQ / BAUD_RATE / 16) - 1 ;the actual bits that must be writted to the baud rate registers
 #define USART_SEND_REG R20
 
 ;queue definitions
@@ -56,7 +73,7 @@
 #define QUEUE_IS_FULL R19 ;store a 1 if the queue is full, 0 otherwise
 
 ;definitions for spm operations
-.EQU PAGE_LENGTH = 64
+.EQU PAGE_LENGTH = 128 ;length of a page in bytes
 #define CURRENT_PAGE_BUFFER_SIZE R16 ;keeps track of how many words we've inserted into the page buffer 
 #define PAGE_HAS_BEEN_ERASED R17 ;1 if the current page has been erased, 0 otherwise
 
@@ -147,8 +164,8 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	sbi PORTB, LED_PIN ;turn LED on
 
 ;set up variables for program loading
-	ser LAST_BUFFERED_WORD_ADDR_LO ;set instead of clr because it needs to be 0 after the first word is added to the buffer
-	ser LAST_BUFFERED_WORD_ADDR_HI ;last word that was put in the page buffer was -1
+	clr LAST_BUFFERED_WORD_ADDR_HI ;set instead of clr because it needs to be 0 after the first word is added to the buffer
+	clr LAST_BUFFERED_WORD_ADDR_LO ;last word that was put in the page buffer was -2
 	clr CURRENT_PAGE_BUFFER_SIZE ;haven't buffered any words yet
 	clr PAGE_HAS_BEEN_ERASED ;haven't erased a page yet
 	clr DONE_RECEIVING_DATA ;not done receiving data
@@ -161,19 +178,17 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	clr QUEUE_IS_FULL ;queue aint full
 
 ;init USART
-	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_RATE)
+	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_BITS)
 	sts UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
-	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_RATE)
+	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_BITS)
 	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
 	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
 	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
-	ldi GENERAL_PURPOSE_REG_1, 0b00000110 ;9 bit communication mode, 1 stop bit, no parity bit, async USART mode
+	ldi GENERAL_PURPOSE_REG_1, 0b00001110 ;9 bit communication mode, 2 stop bits, no parity bit, async USART mode
 	sts UCSR0C, GENERAL_PURPOSE_REG_1
 
-;request first word of data and wait for it to arrive
-	ldi USART_SEND_REG, REQUEST_NEXT_WORD
-	rcall send_byte
-	rjmp receive_word ;start waiting for first word
+;start waiting for first word
+	rjmp receive_word 
 
 
 
@@ -235,6 +250,11 @@ read_received_data:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 receive_word:
+
+;DELPLS
+	ldi USART_SEND_REG, '#'
+	rcall send_byte
+
 	cpi DONE_RECEIVING_DATA, 1 ;check if we're done receiving data
 	breq check_if_spm_done ;if we're done, jump right to updating the flash
 
@@ -305,7 +325,7 @@ start_queue_full_check:
 
 
 check_if_spm_done:
-	lds TEMP_REG, SPMCSR ;load spm status reg
+	in TEMP_REG, SPMCSR ;load spm status reg
 	sbrc TEMP_REG, 0 ;check if spm is still going, skip next instruction if it's not
 	rjmp receive_word ;we can't do any spm so get the next word instead
 
@@ -341,6 +361,10 @@ check_if_spm_done:
 
 fill_page_buffer:
 
+;DELPLS
+	ldi USART_SEND_REG, '!'
+	rcall send_byte
+
 ;dequeue latest word
 	ld CURRENT_WORD_HI, TAIL+ ;dequeue first byte and move tail forward
 	ld CURRENT_WORD_LO, TAIL+ ;dequeue 2nd byte and move tail forward
@@ -348,15 +372,22 @@ fill_page_buffer:
 ;loop tail back to beginning of queue if need be
 	reset_word_if_equal TAIL_HI, TAIL_LO, QUEUE_END, QUEUE_START
 
-;increase word counts
-	inc CURRENT_PAGE_BUFFER_SIZE ;track the size of the page buffer
-	adiw LAST_BUFFERED_WORD_ADDR, 1 ;increase this BEFORE adding to the buffer because spm instruction needs the address for the current word in Z to work
-
 ;add word to page buffer
-	lds TEMP_REG, SPMCSR ;get spm reg
+	in TEMP_REG, SPMCSR ;get spm reg
 	ori TEMP_REG, 0b00000001 ;set bit 0 
-	sts SPMCSR, TEMP_REG ;enable SPM, page buffer fill mode
+	out SPMCSR, TEMP_REG ;enable SPM, page buffer fill mode
 	spm ;add word to temporary page buffer
+
+;increase word counts
+	ldi TEMP_REG, 2 ;we added 1 word (2 bytes)
+	add CURRENT_PAGE_BUFFER_SIZE, TEMP_REG ;track the size of the page buffer
+	adiw LAST_BUFFERED_WORD_ADDR, 2 ;increase by two because spm wants bit 0 of Z to always be 0 for some reason (so the word count is offset by 1 bit... you can think of this as just counting bytes instead of words)
+
+;DELPLS THIS TOO!!!!
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	rcall send_byte
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	rcall send_byte
 
 ;restart main loop
 	rjmp receive_word
@@ -379,6 +410,10 @@ erase_page:
 	ldi USART_SEND_REG, ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR ;prepare error byte for sending
 	brsh error ;if LAST_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
 
+;get NEXT_BUFFERED_WORD_ADDR to the proper address for erasing and writing
+	sub LAST_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;subtract to get back to current page (since the NEXT_BUFFERED_WORD_ADDR currently points to the 0th word of the next page)
+	sbci LAST_BUFFERED_WORD_ADDR_HI, 0 ;update high byte if need be
+
 ;erase the page
 	ldi GENERAL_PURPOSE_REG_1, 0b00000011 ;Enable SPM, page erase mode
 	out SPMCSR, GENERAL_PURPOSE_REG_1
@@ -386,6 +421,18 @@ erase_page:
 
 ;set a bit so we know the erase command for the current page has gone through
 	ldi PAGE_HAS_BEEN_ERASED, 1
+
+;DELPLS
+	in USART_SEND_REG, SPMCSR ;load spm status reg
+	rcall send_byte
+;DELPLS
+	ldi USART_SEND_REG, '-'
+	rcall send_byte
+;DELPLS AGAIN
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	rcall send_byte
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	rcall send_byte
 
 ;restart main loop
 	rjmp receive_word
@@ -403,9 +450,23 @@ write_page:
 	out SPMCSR, GENERAL_PURPOSE_REG_1
 	spm ;write the page
 
+;set NEXT_BUFFERED_WORD_ADDR back to the proper value  
+	add LAST_BUFFERED_WORD_ADDR_LO, CURRENT_PAGE_BUFFER_SIZE ;we subtracted PAGE_LENGTH_BYTES when we erased the page, so now lets add them back
+	clr TEMP_REG ;theres no add with immedate instruction so I have to use the temp reg
+	adc LAST_BUFFERED_WORD_ADDR_HI, TEMP_REG ;add the carry to hi byte
+
 ;reset all the variables needed to do another spm
 	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
 	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
+
+;DELPLS
+	ldi USART_SEND_REG, '+'
+	rcall send_byte
+;DELPLS THIS TOO!!!!
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_HI
+	rcall send_byte
+	mov USART_SEND_REG, LAST_BUFFERED_WORD_ADDR_LO
+	rcall send_byte
 
 ;restart main loop
 	rjmp receive_word
