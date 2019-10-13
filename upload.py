@@ -1,11 +1,14 @@
 #CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
 #MAKE SURE YOU ACTUALLY KNOW HOW THE PARITY STUFF WORKS 
     #rn I'm assuming the parity of a port is used for sending and receiving
+#I REALLY DONT THINK MARK/SPACE PARITY IS ACTUALLY USED TO CHECK RECEIVED STUFF, TEST THAT
+#MAKE YOUR SLEEP AS SHORT AS POSSIBLE
 
 import serial
 import sys
+import time
 
-BAUD_RATE = 128000
+BAUD_RATE = 2400
 
 
 
@@ -80,8 +83,9 @@ def send_word(port, word):
     for byte, parity in word.get_bytes():
         if parity == serial.PARITY_MARK: #don't want to set port.parity every time because it's a setter that execs a fair amount of stuff
             port.parity = serial.PARITY_MARK
-        port.send(byte)
+        port.write(byte)
         if port.parity == serial.PARITY_MARK:
+            time.sleep(0.5) #HAVE TO WAIT A BIT FOR WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
             port.parity = serial.PARITY_SPACE #have to reset parity because parity is used to check received bytes as well as sending them
 
 def open_port():
@@ -89,21 +93,22 @@ def open_port():
         'COM4', 
         BAUD_RATE, 
         parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
+        stopbits = serial.STOPBITS_TWO
     )
 
 def upload(data_words):
     port = open_port()
     print("starting upload...")
     for word in data_words:
+        send_word(port, word)
         new_byte = port.read(1)
+        print_stats(word)
         if is_usart_error_byte(new_byte):
             still_looping = parse_usart_error(new_byte)
         else:
             still_looping = BYTE_ACTIONS[new_byte]()
         if not still_looping:
             break
-        send_word(port, word)
-        print_stats(word)
     print("done")
     port.close()
 
