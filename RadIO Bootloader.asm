@@ -17,17 +17,15 @@
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
+;TEST IF YOU GET AN ERROR WHEN YOU SEND 32K AND SOME ODD BYTES
 
 ;FOR WHATEVER REASON ITS NOT WAITING FOR SPM TO BE DONE?? PERHAPS IM NOT DOING SPM RIGHT, LOOK AT IT AGAIN
 	;could just be that the memory reader is junked... maybe try loading a 1 instruction program instead 
 	;(init the direction stuff BEFORE you exit the bootloader so the app just turns the led on)
 	;OH WAIT BUT BAUD IS ONLY 2400 SO IT PROBABLY NEVER NEEDS TO WAIT TO DO SPM...
 		;put a loop right after an spm command that counts up in the temp reg and then sends the total once spm is done (max out count at 255) 
-;IF THIS DOUBLE Z THING WORKS OUT THEN ILL NEED TO DOUBLE THE ILLEGAL ADDRESS THING TOO...
-	;ALSO UPDATE YOUR COMMENTS (ESPECIALLY AT THE END OF THE INTRO)
 ;YO I DONT THINK THE EDGE CASE WRITE THING ACTUALLY WORKS?? BUT IDK, TEST IT OUT A BIT, MAYBE ITS JUST NOT WRITING POST DISCONNECT BYTES??
 	;seems to erase but not write
-;FOR SOME REASON BOOTLOADED PROGRAM DOESN'T SEEM TO START AS SOON WE EXIT THE BOOTLOADER? (have to reset to get it to start)
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -137,6 +135,11 @@ return:
 application_code: ;if we exit the bootloader without uploading anything then this will make us spin instead of executing 32k NOPs and restarting the bootloader
 	rjmp application_code
 
+;DELPLS
+.ORG 1000
+	ldi USART_SEND_REG, '%'
+	call send_byte
+
 
 .ORG SMALLBOOTSTART ;place the bootloader at the beginning of the smallest bootloader section (256 words large)
 
@@ -174,14 +177,14 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	clr QUEUE_IS_FULL ;queue aint full
 
 ;init USART
-	ldi GENERAL_PURPOSE_REG_1, hi_byte(BAUD_BITS)
-	sts UBRR0H, GENERAL_PURPOSE_REG_1 ;init baud rate hi
-	ldi GENERAL_PURPOSE_REG_1, lo_byte(BAUD_BITS)
-	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;init baud rate lo
-	ldi GENERAL_PURPOSE_REG_1, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
-	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;save USART setting
-	ldi GENERAL_PURPOSE_REG_1, 0b00001110 ;9 bit communication mode, 2 stop bits, no parity bit, async USART mode
-	sts UCSR0C, GENERAL_PURPOSE_REG_1
+	ldi TEMP_REG, hi_byte(BAUD_BITS)
+	sts UBRR0H, TEMP_REG ;init baud rate hi
+	ldi TEMP_REG, lo_byte(BAUD_BITS)
+	sts UBRR0L, TEMP_REG ;init baud rate lo
+	ldi TEMP_REG, 0b00011100 ;turn on both receiver and transmitter, also use 9 bit communication
+	sts UCSR0B, TEMP_REG ;save USART setting
+	ldi TEMP_REG, 0b00001110 ;9 bit communication mode, 2 stop bits, no parity bit, async USART mode
+	sts UCSR0C, TEMP_REG
 
 ;start waiting for first word
 	rjmp receive_word 
@@ -202,7 +205,7 @@ wait_for_empty_transmit_buffer:
 
 ;clear 9th bit
 	lds TEMP_REG, UCSR0B ;can't use cbi on this IO register
-	andi TEMP_REG, 0b11111110 ;always set 9th bit to 0, it's only used when receiving data
+	cbr TEMP_REG, 0b00000001 ;always set 9th bit to 0, it's only used when receiving data (cbr clears the specified bits)
 	sts UCSR0B, TEMP_REG ;update 9th bit
 
 ;send data
@@ -346,8 +349,8 @@ check_if_spm_done:
 	cpi CURRENT_PAGE_BUFFER_SIZE, 0
 	brne erase_page ;erase page if buffer isn't empty
 
-;else everything is done, we can exit the bootloader
-	rjmp exit_bootloader
+;else everything is done, we can stop bootloading and run the application code
+	rjmp reset_mcu
 
 
 
@@ -370,7 +373,7 @@ fill_page_buffer:
 
 ;add word to page buffer
 	in TEMP_REG, SPMCSR ;get spm reg
-	ori TEMP_REG, 0b00000001 ;set bit 0 
+	sbr TEMP_REG, 0b00000001 ;set bit 0 
 	out SPMCSR, TEMP_REG ;enable SPM, page buffer fill mode
 	spm ;add word to temporary page buffer
 
@@ -411,8 +414,8 @@ erase_page:
 	sbci NEXT_BUFFERED_WORD_ADDR_HI, 0 ;update high byte if need be
 
 ;erase the page
-	ldi GENERAL_PURPOSE_REG_1, 0b00000011 ;Enable SPM, page erase mode
-	out SPMCSR, GENERAL_PURPOSE_REG_1
+	ldi TEMP_REG, 0b00000011 ;Enable SPM, page erase mode
+	out SPMCSR, TEMP_REG
 	spm ;erase the page
 
 ;set a bit so we know the erase command for the current page has gone through
@@ -442,8 +445,8 @@ erase_page:
 write_page:
 
 ;write the current page indicated by NEXT_BUFFERED_WORD_ADDR
-	ldi GENERAL_PURPOSE_REG_1, 0b00000101 ;enable SPM, write mode
-	out SPMCSR, GENERAL_PURPOSE_REG_1
+	ldi TEMP_REG, 0b00000101 ;enable SPM, write mode
+	out SPMCSR, TEMP_REG
 	spm ;write the page
 
 ;set NEXT_BUFFERED_WORD_ADDR back to the proper value  
@@ -470,15 +473,50 @@ write_page:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                reset registers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+reset_mcu:
+
+;enable execution of application code
+	ldi TEMP_REG, 0b00010001 ;running this spm instruction reenables the RWW (read while write) section of the flash memory
+	out SPMCSR, TEMP_REG ;I need to reenable the RWW section because it gets disabled automatically whenever you do any writing or erasing to that section
+	spm
+
+;get a 0 ready because most register's default is 0
+	clr GENERAL_PURPOSE_REG_1
+
+;reset gpio registers
+	out PORTB, GENERAL_PURPOSE_REG_1 ;reset port b but also turn off LED to indicate we're no longer in the bootloader
+	out DDRB, GENERAL_PURPOSE_REG_1 ;all port b pins are inputs by default
+
+;reset usart registers
+	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;clear baud rate
+	sts UBRR0H, GENERAL_PURPOSE_REG_1
+	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;clear status reg B
+	ldi TEMP_REG, 0b00000110 ;default behaviour is async, no parity, 1 stop bit, 8 data bits
+	sts UCSR0C, TEMP_REG ;set status reg C to default
+	ldi TEMP_REG, 0b00100000 ;default behaviour is no multiprocessor comm mode, 1x usart transmission speed
+	sts UCSR0A, TEMP_REG ;set status reg A to default
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                                exit bootloader
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+exit_bootloader: ;clean exit
+
+;DELPLS
+	ldi USART_SEND_REG, '$'
+	rcall send_byte
+	in USART_SEND_REG, SPMCSR
+	rcall send_byte
+
+	jmp 0 ;start uploaded program
+
 
 error: ;reports the byte in USART_SEND_REG back to sender then spins forever
 	rcall send_byte
 panic_forever: ;infinite loop
 	rjmp panic_forever
-
-
-exit_bootloader: ;clean exit
-	cbi PORTB, LED_PIN ;turn off LED to indicate we're no longer in the bootloader
-	jmp 0 ;start uploaded program
