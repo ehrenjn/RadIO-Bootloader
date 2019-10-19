@@ -247,10 +247,6 @@ read_received_data:
 
 receive_word:
 
-;DELPLS
-	ldi USART_SEND_REG, '#'
-	rcall send_byte
-
 	cpi DONE_RECEIVING_DATA, 1 ;check if we're done receiving data
 	breq check_if_spm_done ;if we're done, jump right to updating the flash
 
@@ -357,10 +353,6 @@ check_if_spm_done:
 
 fill_page_buffer:
 
-;DELPLS
-	ldi USART_SEND_REG, '!'
-	rcall send_byte
-
 ;dequeue latest word
 	ld CURRENT_WORD_HI, TAIL+ ;dequeue first byte and move tail forward
 	ld CURRENT_WORD_LO, TAIL+ ;dequeue 2nd byte and move tail forward
@@ -378,12 +370,6 @@ fill_page_buffer:
 	ldi TEMP_REG, 2 ;we added 1 word (2 bytes)
 	add CURRENT_PAGE_BUFFER_SIZE, TEMP_REG ;track the size of the page buffer
 	adiw NEXT_BUFFERED_WORD_ADDR, 2 ;increase by two because spm wants bit 0 of Z to always be 0 for some reason (so the word count is offset by 1 bit... you can think of this as just counting bytes instead of words)
-
-;DELPLS THIS TOO!!!!
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
-	rcall send_byte
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
-	rcall send_byte
 
 ;restart main loop
 	rjmp receive_word
@@ -418,18 +404,6 @@ erase_page:
 ;set a bit so we know the erase command for the current page has gone through
 	ldi PAGE_HAS_BEEN_ERASED, 1
 
-;DELPLS
-	in USART_SEND_REG, SPMCSR ;load spm status reg
-	rcall send_byte
-;DELPLS
-	ldi USART_SEND_REG, '-'
-	rcall send_byte
-;DELPLS AGAIN
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
-	rcall send_byte
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
-	rcall send_byte
-
 ;restart main loop
 	rjmp receive_word
 
@@ -455,15 +429,6 @@ write_page:
 	clr CURRENT_PAGE_BUFFER_SIZE ;page buffer is now 0
 	clr PAGE_HAS_BEEN_ERASED ;next page has not yet been erased
 
-;DELPLS
-	ldi USART_SEND_REG, '+'
-	rcall send_byte
-;DELPLS THIS TOO!!!!
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_HI
-	rcall send_byte
-	mov USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR_LO
-	rcall send_byte
-
 ;restart main loop
 	rjmp receive_word
 
@@ -474,12 +439,6 @@ write_page:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 reset_mcu:
-
-;DELPLS
-	ldi USART_SEND_REG, '$'
-	rcall send_byte
-	rcall send_byte 
-	rcall send_byte ;SEND THRICE JUST SO IT DOESNT RESET BEFORE THE FIRST ONE IS SENT, YOU'LL STILL JUST SEE 1 '$' PROBABLY
 
 ;enable execution of application code
 	ldi TEMP_REG, 0b00010001 ;running this spm instruction reenables the RWW (read while write) section of the flash memory
@@ -497,6 +456,12 @@ wait_for_final_usart_transmit:
 	lds TEMP_REG, UCSR0A ;have to wait for any transmissions to finish before I reset the usart, otherwise some data could be lost
 	sbrs TEMP_REG, 6 ;check if theres any data being sent still
 	rjmp wait_for_final_usart_transmit ;keep waiting until transmission is done
+
+;flush out untransmitted usart data
+	ser USART_SEND_REG
+	rcall send_byte ;I shouldn't have to do this because I already check bit 6 of UCSR0A but for some reason it doesn't work (possible pyserial issue?)
+	rcall send_byte 
+	rcall send_byte ;send thrice just so it doesnt reset before the first one is sent, you'll still just see 1 '\xFF' probably
 
 ;reset usart registers
 	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;clear status reg B
