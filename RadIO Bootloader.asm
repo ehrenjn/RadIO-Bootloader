@@ -5,11 +5,9 @@
 		;these two fuses control WHERE the bootloader section begins in memory
 		;setting them both to 1 creates the smallest bootloader space possible on the 328p (256 words)
 
-;it is reccomend to also set up the following lock bits after the bootloader is uploaded to stop application code from erasing the bootloader:
-	;*unprogram* BLB12 and BLB11 (set them to 0)
-		;this will make it impossible for any executing code to write to the bootloader section 
-		;also makes interrupts unable to be invoked from bootloader (which we're not using anyway)
-		;also makes application code unable to read bootloader code
+;it is recommended to also set up the following lock bits after the bootloader is uploaded to stop application code from erasing the bootloader:
+	;*program* BLB11 (set to 0) and *unprogram* BLB12 (set to 1)
+		;this will make it impossible for any code to write to the bootloader section 
 
 
 ;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
@@ -17,15 +15,19 @@
 ;HOW LONG DOES IT TAKE TO DO SPM FOR BUFFER FILLING?? COULD I JUST SPAM BUFFER FILL SPM????
 	;if you can spam you can simply change the rjmp at the end of the fill buffer section to jump back to the start of spm instead of receive byte
 ;WOULD BE FASTER IF I REQUESTED THE NEXT WORD BEFORE ADDING THE CURRENT WORD TO THE QUEUE BUT IT WOULD BE HARD TO IMPLEMENT (because I'd have to increase queue by 4 with looping)
-;TEST IF YOU GET AN ERROR WHEN YOU SEND 32K AND SOME ODD BYTES
+;THERES ONE PAGE THAT I CANT WRITE TO BECAUSE THE WRITE FUNCTION DOES A >= INSTEAD OF A >
+	;might not be worth to fix, have to wait a while to test it so fix it later when everything is faster I guess
+;SHOULD TEST QUEUE SOMEHOW 
+	;maybe it'll test itself once you get the usart going faster? have to keep the debug stuff in I guess...
 
-;FOR WHATEVER REASON ITS NOT WAITING FOR SPM TO BE DONE?? PERHAPS IM NOT DOING SPM RIGHT, LOOK AT IT AGAIN
-	;could just be that the memory reader is junked... maybe try loading a 1 instruction program instead 
-	;(init the direction stuff BEFORE you exit the bootloader so the app just turns the led on)
-	;OH WAIT BUT BAUD IS ONLY 2400 SO IT PROBABLY NEVER NEEDS TO WAIT TO DO SPM...
-		;put a loop right after an spm command that counts up in the temp reg and then sends the total once spm is done (max out count at 255) 
-;YO I DONT THINK THE EDGE CASE WRITE THING ACTUALLY WORKS?? BUT IDK, TEST IT OUT A BIT, MAYBE ITS JUST NOT WRITING POST DISCONNECT BYTES??
-	;seems to erase but not write
+;FOR SOME UNGODLY REASON PYSERIAL SEEMS TO NOT BE READING SOME BYTES
+	;AND ITS NOT JUST BECAUSE IM NOT WAITING LONG ENOUGH... ITS HAPPENING IF I READ TOO SOON AFTER A PARITY SWITCH? REGARDLESS OF WHEN I WRITE THE PARITY?
+	;COULD HAVE SOMETHING TO DO WITH IT READING AN INVALID PARITY OR SOMETHING
+	;MIGHT ALSO SOMEHOW HAVE TO DO WITH ERASES AND WRITES BECAUSE IT SEEMS TO BE MISSING DISCONNECT BYTES THE MOST
+	;IT HAPPENS WHEN IM SENDING 1 REAL BYTE AND 1 DISCONNECT BYTE
+;BEFORE RESETTING THE USART MAKE SURE ALL SENDING HAS FINISHED (DIFFERENT FROM WHEN YOU'RE ABLE TO WRITE TO TRANSMITTER)
+	;AHHHHH NOTHING WORKS FOR SOME REASON.... I DONT REALLY NEED TO BE ABLE TO DO IT EXCEPT FOR DEBUG THOUGH....
+	;WHEN CONSIDERING ALL THE OPTIONS THE BEST ONE TBH IS JUST SENDING 3 BYTES TO FLUSH THE CHUBES
 
 ;go to page 277 in atmega datasheet to read about "programming the flash"
 ;go to page 287 in datasheet for "Assembly Code Example for a Boot Loader"
@@ -134,11 +136,6 @@ return:
 
 application_code: ;if we exit the bootloader without uploading anything then this will make us spin instead of executing 32k NOPs and restarting the bootloader
 	rjmp application_code
-
-;DELPLS
-.ORG 1000
-	ldi USART_SEND_REG, '%'
-	call send_byte
 
 
 .ORG SMALLBOOTSTART ;place the bootloader at the beginning of the smallest bootloader section (256 words large)
@@ -478,6 +475,12 @@ write_page:
 
 reset_mcu:
 
+;DELPLS
+	ldi USART_SEND_REG, '$'
+	rcall send_byte
+	rcall send_byte 
+	rcall send_byte ;SEND THRICE JUST SO IT DOESNT RESET BEFORE THE FIRST ONE IS SENT, YOU'LL STILL JUST SEE 1 '$' PROBABLY
+
 ;enable execution of application code
 	ldi TEMP_REG, 0b00010001 ;running this spm instruction reenables the RWW (read while write) section of the flash memory
 	out SPMCSR, TEMP_REG ;I need to reenable the RWW section because it gets disabled automatically whenever you do any writing or erasing to that section
@@ -490,10 +493,15 @@ reset_mcu:
 	out PORTB, GENERAL_PURPOSE_REG_1 ;reset port b but also turn off LED to indicate we're no longer in the bootloader
 	out DDRB, GENERAL_PURPOSE_REG_1 ;all port b pins are inputs by default
 
+wait_for_final_usart_transmit:
+	lds TEMP_REG, UCSR0A ;have to wait for any transmissions to finish before I reset the usart, otherwise some data could be lost
+	sbrs TEMP_REG, 6 ;check if theres any data being sent still
+	rjmp wait_for_final_usart_transmit ;keep waiting until transmission is done
+
 ;reset usart registers
+	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;clear status reg B
 	sts UBRR0L, GENERAL_PURPOSE_REG_1 ;clear baud rate
 	sts UBRR0H, GENERAL_PURPOSE_REG_1
-	sts UCSR0B, GENERAL_PURPOSE_REG_1 ;clear status reg B
 	ldi TEMP_REG, 0b00000110 ;default behaviour is async, no parity, 1 stop bit, 8 data bits
 	sts UCSR0C, TEMP_REG ;set status reg C to default
 	ldi TEMP_REG, 0b00100000 ;default behaviour is no multiprocessor comm mode, 1x usart transmission speed
@@ -506,13 +514,6 @@ reset_mcu:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 exit_bootloader: ;clean exit
-
-;DELPLS
-	ldi USART_SEND_REG, '$'
-	rcall send_byte
-	in USART_SEND_REG, SPMCSR
-	rcall send_byte
-
 	jmp 0 ;start uploaded program
 
 
