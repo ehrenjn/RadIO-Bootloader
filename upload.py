@@ -1,19 +1,19 @@
 #CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
 #MAKE SURE YOU ACTUALLY KNOW HOW THE PARITY STUFF WORKS 
     #rn I'm assuming the parity of a port is used for sending and receiving
-#I REALLY DONT THINK MARK/SPACE PARITY IS ACTUALLY USED TO CHECK RECEIVED STUFF, TEST THAT
 #MAKE YOUR SLEEP AS SHORT AS POSSIBLE
 
 import serial
 import sys
+import os
 import time
 
-BAUD_RATE = 2400
+BAUD_RATE = 38400
 
 
 
 class Word:
-    '''reresents 16 + 2 bits of data to be sent to the bootloader'''
+    '''represents 16 + 2 bits of data to be sent to the bootloader'''
 
     def __init__(self, data, word_num):
         self._data = data
@@ -26,7 +26,8 @@ class Word:
             if index >= len(self._data): #index is not in data
                 yield b'\x00', serial.PARITY_MARK #PARITY_MARK = 1
             else: #index is in data
-                yield self._data[index], serial.PARITY_SPACE #PARITY_SPACE = 0
+                byte = self._data[index: index + 1] #slice to get a bytes object instead of an int
+                yield byte, serial.PARITY_SPACE #PARITY_SPACE = 0
     
     def location(self):
         '''
@@ -36,6 +37,11 @@ class Word:
         return self._word_num * 2, len(self._data)
 
 
+def invalid_write():
+    print("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
+    return False
+
+
 BYTE_ACTIONS = {
     b'w': lambda: True, #next word request
     b'd': lambda: False, #disconnect request
@@ -43,13 +49,10 @@ BYTE_ACTIONS = {
 }
 
 
-def invalid_write():
-    print("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
-    return False
-
+ERROR_BYTE_MAX = bytes([31])
 
 def is_usart_error_byte(byte):
-    return byte < 32
+    return byte <= ERROR_BYTE_MAX
 
 def bit_n(byte, n):
     return (byte & (1 << n)) != 0
@@ -63,7 +66,7 @@ def parse_usart_error(error_byte):
 
 
 LOAD_BAR_LENGTH = 30
-RESTART_LINE = "\r\x1b[F"
+RESTART_LINE = "\x1b[F"
 
 def print_stats(word):
     byte_num, total_bytes = word.location()
@@ -81,24 +84,27 @@ def gen_words(data_bytes):
 
 def send_word(port, word):
     for byte, parity in word.get_bytes():
-        if parity == serial.PARITY_MARK: #don't want to set port.parity every time because it's a setter that execs a fair amount of stuff
-            port.parity = serial.PARITY_MARK
+        if parity != port.parity: #don't want to set port.parity every time because it's a setter that execs a fair amount of stuff
+            time.sleep(0.1) #HAVE TO WAIT A BIT FOR PREVIOUS WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
+            port.parity = parity
         port.write(byte)
-        if port.parity == serial.PARITY_MARK:
-            time.sleep(0.5) #HAVE TO WAIT A BIT FOR WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
-            port.parity = serial.PARITY_SPACE #have to reset parity because parity is used to check received bytes as well as sending them
 
 def open_port():
     return serial.Serial(
-        'COM4', 
+        'COM3', 
         BAUD_RATE, 
         parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
         stopbits = serial.STOPBITS_TWO
     )
 
+def windows_start_ansi():
+    if sys.platform.startswith('win'): #HAVE TO CLS BEFORE DOING ANY ANSI CONTROL STUFF IN WINDOWS FOR SOME UNGODLY REASON
+        os.system('cls')
+
 def upload(data_words):
+    windows_start_ansi()
     port = open_port()
-    print("starting upload...")
+    print("uploading...\n")
     for word in data_words:
         send_word(port, word)
         new_byte = port.read(1)
