@@ -1,7 +1,8 @@
 #CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
-#MAKE SURE YOU ACTUALLY KNOW HOW THE PARITY STUFF WORKS 
-    #rn I'm assuming the parity of a port is used for sending and receiving
 #MAKE YOUR SLEEP AS SHORT AS POSSIBLE
+#TEST THIS WITH CODE THAT WILL HAVE THE LAST BYTE IN ITS OWN CHUNK
+    #just need to know what port.send("") does
+#STILL GOTTA TEST ALL ERROR HANDLING
 
 import serial
 import sys
@@ -9,44 +10,23 @@ import os
 import time
 
 BAUD_RATE = 38400
+BYTES_PER_CHUNK = 15 * 128 #bootloader accepts 15 pages of data at a time
 
-
-
-class Word:
-    '''represents 16 + 2 bits of data to be sent to the bootloader'''
-
-    def __init__(self, data, word_num):
-        self._data = data
-        self._word_num = word_num
-
-    def get_bytes(self):
-        word_start = self._word_num * 2
-        for byte_num in range(2):
-            index = word_start + byte_num
-            if index >= len(self._data): #index is not in data
-                yield b'\x00', serial.PARITY_MARK #PARITY_MARK = 1
-            else: #index is in data
-                byte = self._data[index: index + 1] #slice to get a bytes object instead of an int
-                yield byte, serial.PARITY_SPACE #PARITY_SPACE = 0
-    
-    def location(self):
-        '''
-        returns how many bytes into self._data this word is located
-        as well as the length of the data itself
-        '''
-        return self._word_num * 2, len(self._data)
 
 
 def invalid_write():
     print("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
-    return False
+    exit()
 
+def do_nothing():
+    pass
 
 BYTE_ACTIONS = {
-    b'w': lambda: True, #next word request
-    b'd': lambda: False, #disconnect request
+    b'w': do_nothing, #next word request
+    b'd': do_nothing, #done receiving data
     b'o': invalid_write #invalid write error
 }
+
 
 
 ERROR_BYTE_MAX = bytes([31])
@@ -58,36 +38,31 @@ def bit_n(byte, n):
     return (byte & (1 << n)) != 0
 
 def parse_usart_error(error_byte):
+    error_byte = error_byte[0] #convert to int
     if bit_n(error_byte, 3): #data overrun
         print("ERROR: USART Data OverRun: the bootloader received a new byte while the USART buffer was already full")
     if bit_n(error_byte, 4): #frame error
         print("ERROR: USART Frame Error: the bootloader received one or more invalid start/stop bits")
-    return False
+    exit()
+
 
 
 LOAD_BAR_LENGTH = 30
 RESTART_LINE = "\x1b[F"
 
-def print_stats(word):
-    byte_num, total_bytes = word.location()
+def print_stats(byte_num, total_bytes):
     num_blocks = round(byte_num/total_bytes * LOAD_BAR_LENGTH)
     loading_bar = "#"*num_blocks + " "*(LOAD_BAR_LENGTH - num_blocks) 
     print(f"{RESTART_LINE}[{loading_bar}] {byte_num}/{total_bytes} bytes uploaded")
 
 
-def gen_words(data_bytes):
-    word_num = 0
-    while True:
-        yield Word(data_bytes, word_num)
-        word_num += 1
 
+def chunk_data(data):
+    return [
+        data[chunk_start: chunk_start + BYTES_PER_CHUNK]
+        for chunk_start in range(0, len(data), BYTES_PER_CHUNK)
+    ]
 
-def send_word(port, word):
-    for byte, parity in word.get_bytes():
-        if parity != port.parity: #don't want to set port.parity every time because it's a setter that execs a fair amount of stuff
-            time.sleep(0.1) #HAVE TO WAIT A BIT FOR PREVIOUS WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
-            port.parity = parity
-        port.write(byte)
 
 def open_port():
     return serial.Serial(
@@ -97,25 +72,45 @@ def open_port():
         stopbits = serial.STOPBITS_TWO
     )
 
+
+def upload_chunk(port, chunk, is_last_chunk):
+    if is_last_chunk: 
+        port.write(chunk[:-1])
+        time.sleep(0.1) #HAVE TO WAIT A BIT FOR PREVIOUS WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
+        port.parity = serial.PARITY_MARK #change 9th bit to a 1
+        port.write(chunk[-1:])
+    else:
+        port.write(chunk)
+    return port.read(1)
+
+
+def process_bootloader_response(response):
+    if is_usart_error_byte(response):
+        parse_usart_error(response)
+    else:
+        BYTE_ACTIONS[response]()
+
+
 def windows_start_ansi():
     if sys.platform.startswith('win'): #HAVE TO CLS BEFORE DOING ANY ANSI CONTROL STUFF IN WINDOWS FOR SOME UNGODLY REASON
         os.system('cls')
 
-def upload(data_words):
+
+def upload(data):
     windows_start_ansi()
     port = open_port()
+    total_bytes_uploaded = 0
+    data_chunks = chunk_data(data)
     print("uploading...\n")
-    for word in data_words:
-        send_word(port, word)
-        new_byte = port.read(1)
-        print_stats(word)
-        if is_usart_error_byte(new_byte):
-            still_looping = parse_usart_error(new_byte)
-        else:
-            still_looping = BYTE_ACTIONS[new_byte]()
-        if not still_looping:
-            break
-    print("done")
+
+    for chunk_num, chunk in enumerate(data_chunks):
+        is_last_chunk = chunk_num == len(data_chunks) - 1
+        response = upload_chunk(port, chunk, is_last_chunk)
+        total_bytes_uploaded += len(chunk)
+        print_stats(total_bytes_uploaded, len(data))
+        process_bootloader_response(response)
+
+    print("done uploading")
     port.close()
 
 
@@ -125,10 +120,10 @@ if __name__ == "__main__":
         data_file = sys.argv[1]
         try:
             with open(data_file, 'rb') as data:
-                word_generator = gen_words(data.read())
+                data_bytes = data.read()
         except FileNotFoundError:
             print(f"ERROR: can't read provided file ({data_file})")
         else:
-            upload(word_generator)
+            upload(data_bytes)
     else:
         print("ERROR: please provide a program file to upload")
