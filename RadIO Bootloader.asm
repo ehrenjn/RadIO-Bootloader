@@ -268,6 +268,11 @@ buffer_next_word:
 
 write_page:
 
+;prepare NEXT_BUFFERED_WORD_ADDR for erase and write operations
+	movw TEMP_NEXT_BUFFERED_WORD_ADDR_LO, NEXT_BUFFERED_WORD_ADDR_LO ;save NEXT_BUFFERED_WORD_ADDR so it can be restored later (movw makes you specify only lo registers)
+	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;wanna lower NEXT_BUFFERED_WORD_ADDR back to the last multiple of 64, have to sub 1 because if we buffered a whole page then NEXT_BUFFERED_WORD_ADDR is already pointing to the 0th word of the NEXT page (this will always work because we always buffer at least one word)
+	andi NEXT_BUFFERED_WORD_ADDR_LO, 0b11000000 ;and lo byte with a bit mask to round back to last 64 bits
+
 ;check if we're trying to overwrite the bootloader itself
 	ldi TEMP_REG, lo_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
 	cp NEXT_BUFFERED_WORD_ADDR_LO, TEMP_REG ;compare NEXT_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
@@ -277,11 +282,6 @@ write_page:
 ;if we're trying to overwrite the bootloader then throw an error
 	ldi USART_SEND_REG, ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR ;prepare error byte for sending
 	brsh error ;if NEXT_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
-
-;prepare NEXT_BUFFERED_WORD_ADDR for erase and write operations
-	movw TEMP_NEXT_BUFFERED_WORD_ADDR_LO, NEXT_BUFFERED_WORD_ADDR_LO ;save NEXT_BUFFERED_WORD_ADDR so it can be restored later (movw makes you specify only lo registers)
-	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;wanna lower NEXT_BUFFERED_WORD_ADDR back to the last multiple of 64, have to sub 1 because if we buffered a whole page then NEXT_BUFFERED_WORD_ADDR is already pointing to the 0th word of the NEXT page (this will always work because we always buffer at least one word)
-	andi NEXT_BUFFERED_WORD_ADDR_LO, 0b11000000 ;and lo byte with a bit mask to round back to last 64 bits
 
 ;erase the page indicated by NEXT_BUFFERED_WORD_ADDR
 	ldi TEMP_REG, 0b00000011 ;Enable SPM, page erase mode
