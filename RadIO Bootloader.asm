@@ -37,7 +37,8 @@
 ;KEEP IN MIND THAT WE'RE OFTEN GONNA BOOTLOAD A TRASH BYTE AT THE END (if theres an odd number of bytes bootloaded)
 	;often not 0
 ;MIGHT WANNA FIGURE OUT IF I CAN ADD THINGS TO THE PAGE BUFFER WHILE A PAGE ERASE IS HAPPENING
-;STILL HAVE TO CHANGE BOOTLOADER OVERRIDE CHECK TO WRITE FINAL PAGE
+;MAKE SURE LOCK BITS STILL MAKE SENSE
+;THAT WAIT_SPM AFTER ENABLING RWW SECTION IS PRETTY SHADY...
 
 
 
@@ -155,12 +156,6 @@ application_code: ;if we exit the bootloader without uploading anything then thi
 	clr NEXT_BUFFERED_WORD_ADDR_LO 
 	clr DONE_RECEIVING_DATA ;not done receiving data
 
-;init queue to be empty
-	ldi QUEUE_HEAD_LO, lo_byte(QUEUE_START) ;place first piece of data at QUEUE_START
-	ldi QUEUE_HEAD_HI, hi_byte(QUEUE_START)
-	ldi QUEUE_TAIL_LO, lo_byte(QUEUE_START) ;the first address to read data from is QUEUE_START
-	ldi QUEUE_TAIL_HI, hi_byte(QUEUE_START)
-
 ;init USART
 	ldi TEMP_REG, hi_byte(BAUD_BITS)
 	sts UBRR0H, TEMP_REG ;init baud rate hi
@@ -239,8 +234,8 @@ buffer_next_page:
 buffer_next_word:
 
 ;load data needed to buffer the next word
-	ld CURRENT_WORD_HI, QUEUE_TAIL+ ;dequeue first byte and move tail forward
-	ld CURRENT_WORD_LO, QUEUE_TAIL+ ;dequeue 2nd byte
+	ld CURRENT_WORD_LO, QUEUE_TAIL+ ;dequeue first byte and move tail forward
+	ld CURRENT_WORD_HI, QUEUE_TAIL+ ;dequeue 2nd byte (LO COMES BEFORE HI BECAUSE COMPILED BINARIES (AS WELL AS THE FLASH ITSELF) STORES WORDS IN LITTLE ENDIAN FORMAT, ALSO FOR SOME REASON SPM EXPECTS YOU TO PROVIDE WORDS IN R1:R0 IN BIG ENDIAN FORM)
 
 ;add word to page buffer
 	in TEMP_REG, SPMCSR ;get spm reg
@@ -312,14 +307,35 @@ write_page:
 	rcall send_byte
 
 
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;                                 reset registers
+;                                 verify program
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;enable execution of application code
+;enable reading/execution of application code
 	ldi TEMP_REG, 0b00010001 ;running this spm instruction reenables the RWW (read while write) section of the flash memory
 	out SPMCSR, TEMP_REG ;I need to reenable the RWW section because it gets disabled automatically whenever you do any writing or erasing to that section
 	spm
+	wait_spm ;have to wait for spm to finish (despite the datasheet not mentioning having to wait on this spm command at all)
+
+;prepare to send bootloaded program back
+	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;NEXT_BUFFERED_WORD_ADDR points to the next byte, so we have to decrement to get the previous byte (the last bootloaded byte)
+
+verify_byte:
+
+;send bytes of program back to the upload script (in reverse)
+	lpm USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR ;load program byte 
+	rcall send_byte ;send program byte
+
+;keep sending bytes until we're done the whole program
+	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;address of next byte to send
+	brcc verify_byte ;keep looping until NEXT_BUFFERED_WORD_ADDR underflows
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                                 reset registers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;reset gpio registers
 	clr TEMP_REG ;next two registers should be reset to 0
@@ -388,3 +404,12 @@ wait_for_empty_transmit_buffer:
 
 ;return
 	ret
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;                               plug my github
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+.ORG FLASHEND - 7 ;put this right at the end of the whole flash (.ORG addresses words, not bytes)
+.DB "github: @ehrenjn" 

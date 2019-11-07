@@ -1,8 +1,7 @@
 #CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
 #MAKE YOUR SLEEP AS SHORT AS POSSIBLE
-#TEST THIS WITH CODE THAT WILL HAVE THE LAST BYTE IN ITS OWN CHUNK
-    #just need to know what port.send("") does
 #STILL GOTTA TEST ALL ERROR HANDLING
+#NEED TO ADD TIMEOUT TO VERIFY FUNCTION BASED ON BAUD RATE
 
 import serial
 import sys
@@ -14,9 +13,13 @@ BYTES_PER_CHUNK = 15 * 128 #bootloader accepts 15 pages of data at a time
 
 
 
-def invalid_write():
-    print("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
+def error(msg):
+    print(msg)
     exit()
+
+
+def invalid_write():
+    error("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
 
 def do_nothing():
     pass
@@ -96,22 +99,34 @@ def windows_start_ansi():
         os.system('cls')
 
 
-def upload(data):
+def upload(port, data):
     windows_start_ansi()
-    port = open_port()
     total_bytes_uploaded = 0
     data_chunks = chunk_data(data)
     print("uploading...\n")
-
     for chunk_num, chunk in enumerate(data_chunks):
         is_last_chunk = chunk_num == len(data_chunks) - 1
         response = upload_chunk(port, chunk, is_last_chunk)
         total_bytes_uploaded += len(chunk)
         print_stats(total_bytes_uploaded, len(data))
         process_bootloader_response(response)
-
     print("done uploading")
-    port.close()
+
+
+def verify(port, data):
+    print("verifying upload...")
+    data = data[-1::-1] #reverse data since bootloader sends it back in reverse order
+    num_garbage_bytes = len(data) % 2 #IF THE LENGTH OF THE PROGRAM ISN'T EVEN THE BOOTLOADER WILL ADD AN EXTRA RANDOM BYTE TO THE END
+    bootloaded = port.read(len(data) + num_garbage_bytes)
+    if bootloaded[num_garbage_bytes:] != data:
+        error("program wasn't uploaded properly (verification failed)")
+    print("done verifying")
+
+
+def bootload(data):
+    port = open_port()
+    upload(port, data)
+    verify(port, data)
 
 
 
@@ -124,6 +139,6 @@ if __name__ == "__main__":
         except FileNotFoundError:
             print(f"ERROR: can't read provided file ({data_file})")
         else:
-            upload(data_bytes)
+            bootload(data_bytes)
     else:
         print("ERROR: please provide a program file to upload")
