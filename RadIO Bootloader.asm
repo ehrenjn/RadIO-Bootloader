@@ -39,6 +39,10 @@
 ;MIGHT WANNA FIGURE OUT IF I CAN ADD THINGS TO THE PAGE BUFFER WHILE A PAGE ERASE IS HAPPENING
 ;MAKE SURE LOCK BITS STILL MAKE SENSE
 ;THAT WAIT_SPM AFTER ENABLING RWW SECTION IS PRETTY SHADY...
+;MAYBE JUST MAKE THE BOOTLOADER WAIT FOR ONE LAST BYTE FROM THE UPLOAD SCRIPT BEFORE SHUTTING DOWN 
+	;this'll also make the reset code cleaner (GET RID OF FLUSH CODE AND OTHER USART WAIT CODE)
+	;ugh, but then you may as well turn wait_for_byte into a macro
+		;while you're at it you could even make a do_spm macro (but no need to if you really dont wanna)
 
 
 
