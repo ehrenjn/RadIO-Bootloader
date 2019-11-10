@@ -95,6 +95,11 @@
 #define QUEUE_TAIL_LO R28
 #define QUEUE_TAIL_HI R29
 
+;verification definitions
+#define VERIFY_CHECKSUM_LO R22 ;use a BSD checksum to verify that the program was uploaded properly
+#define VERIFY_CHECKSUM_HI R23 ;checksum will be 16 bits so it takes 2 registers
+#define VERIFY_CHECKSUM VERIFY_CHECKSUM_HI: VERIFY_CHECKSUM_LO
+
 ;other register definitions
 #define DONE_RECEIVING_DATA R18 ;stores a 1 if we're done receiving data, 0 otherwise
 #define TEMP_REG R21 ;used for storing values that will be used very soon, ie in an instruction or 2. I should always be able to easily know if this register is available or not just by glancing at nearby instructions
@@ -251,13 +256,23 @@ buffer_next_word:
 	adiw NEXT_BUFFERED_WORD_ADDR, 2 ;increase by two because spm wants bit 0 of Z to always be 0 for some reason (so the word count is offset by 1 bit... you can think of this as just counting bytes instead of words)
 	subi BUFFER_LOOP_COUNTER, 1 
 
-;if the whole page has been buffered it's time to write it
-	breq write_page ;branch if BUFFER_LOOP_COUNTER is 0
-
-;else, keep looping if we haven't buffered everything in the queue
+;check if we've buffered everything in the queue
 	cp QUEUE_TAIL_LO, QUEUE_HEAD_LO ;16 bit compare of QUEUE_TAIL and QUEUE_HEAD
 	cpc QUEUE_TAIL_HI, QUEUE_HEAD_HI
-	brlo buffer_next_word ;if QUEUE_TAIL < QUEUE_HEAD then keep buffering
+	brsh buffered_whole_queue ;if QUEUE_TAIL >= QUEUE_HEAD then we've buffered the whole queue (or more)
+
+;keep looping if we haven't buffered a whole page
+	cpi BUFFER_LOOP_COUNTER, 0 ;check if we're done looping over the page
+	brne buffer_next_word ;keep looping if BUFFER_LOOP_COUNTER isn't 0 yet
+	rjmp write_page ;write the page if it's been buffered
+
+buffered_whole_queue:
+
+;if we've just buffered everything in the queue then we can write the page
+	breq write_page
+
+;if we've buffered one more byte than the queue contains, we need to adjust NEXT_BUFFERED_WORD_ADDR to reflect that
+	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;this can happen because we buffer one word at a time (however the reason I have to adjust NEXT_BUFFERED_WORD_ADDR is so verification doesn't loop over anything that's not part of the program)
 
 
 
@@ -277,12 +292,13 @@ write_page:
 	cp NEXT_BUFFERED_WORD_ADDR_LO, TEMP_REG ;compare NEXT_BUFFERED_WORD_ADDR and ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN
 	ldi TEMP_REG, hi_byte(ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN)
 	cpc NEXT_BUFFERED_WORD_ADDR_HI, TEMP_REG
+	brlo erase_current_page ;if NEXT_BUFFERED_WORD_ADDR < ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then we can erase the page
 	
-;if we're trying to overwrite the bootloader then throw an error
+;we're trying to overwrite the bootloader, so throw an error
 	ldi USART_SEND_REG, ATTEMPT_TO_OVERWRITE_BOOTLOADER_ERROR ;prepare error byte for sending
-	brsh error ;if NEXT_BUFFERED_WORD_ADDR >= ILLEGAL_BUFFERED_WORD_ADDRS_BEGIN then throw the error
+	rjmp error ;then throw the error (couldn't just brsh because error brance is too far away)
 
-;erase the page indicated by NEXT_BUFFERED_WORD_ADDR
+erase_current_page:
 	ldi TEMP_REG, 0b00000011 ;Enable SPM, page erase mode
 	out SPMCSR, TEMP_REG
 	spm ;erase the page
@@ -318,23 +334,37 @@ write_page:
 
 ;enable reading/execution of application code
 	ldi TEMP_REG, 0b00010001 ;running this spm instruction reenables the RWW (read while write) section of the flash memory
-	out SPMCSR, TEMP_REG ;I need to reenable the RWW section because it gets disabled automatically whenever you do any writing or erasing to that section
+	out SPMCSR, TEMP_REG ;need to reenable the RWW section because it gets disabled automatically whenever you do any writing or erasing to that section
 	spm
 	wait_spm ;have to wait for spm to finish (despite the datasheet not mentioning having to wait on this spm command at all)
 
-;prepare to send bootloaded program back
+;prepare to send checksum of bootloaded program back
+	movw VERIFY_CHECKSUM_LO, NEXT_BUFFERED_WORD_ADDR_LO ;initialize checksum to be the number of bytes bootloaded (don't init checksum as 0 because then all programs consisting of only NOPs will have the same checksum)
 	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;NEXT_BUFFERED_WORD_ADDR points to the next byte, so we have to decrement to get the previous byte (the last bootloaded byte)
 
 verify_byte:
 
-;send bytes of program back to the upload script (in reverse)
-	lpm USART_SEND_REG, NEXT_BUFFERED_WORD_ADDR ;load program byte 
-	rcall send_byte ;send program byte
+;rotate checksum (a la BSD checksum)
+	lsr VERIFY_CHECKSUM_HI ;rotate hi byte of hash right and shift lsb into carry flag
+	ror VERIFY_CHECKSUM_LO ;rotate lo byte of hash right, shifting in the carry flag (lsb of VERIFY_HASH_HI) and shifting the lsb of VERIFY_HASH_LO into carry
+	brcc add_byte_to_checksum ;we're done rotating if a 0 was rotated out of VERIFY_CHECKSUM_LO
+	sbr VERIFY_CHECKSUM_HI, 0b10000000 ;set first msb of checksum if 1 got shifted out of VERIFY_CHECKSUM_LO
 
-;keep sending bytes until we're done the whole program
+add_byte_to_checksum:
+	lpm TEMP_REG, NEXT_BUFFERED_WORD_ADDR ;load program byte 
+	add VERIFY_CHECKSUM_LO, TEMP_REG ;add program byte to checksum
+	clr TEMP_REG ;clear TEMP_REG because theres no add immediate with carry
+	adc VERIFY_CHECKSUM_HI, TEMP_REG ;propagate carry into hi byte of checksum
+
+;keep adding bytes to checksum until we're done the whole program
 	sbiw NEXT_BUFFERED_WORD_ADDR, 1 ;address of next byte to send
 	brcc verify_byte ;keep looping until NEXT_BUFFERED_WORD_ADDR underflows
 
+;send checksum to upload script
+	mov USART_SEND_REG, VERIFY_CHECKSUM_HI ;send hi byte of checksum
+	rcall send_byte
+	mov USART_SEND_REG, VERIFY_CHECKSUM_LO ;send lo byte of checksum
+	rcall send_byte
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

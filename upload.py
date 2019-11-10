@@ -2,7 +2,6 @@
 #MAKE YOUR SLEEP AS SHORT AS POSSIBLE
 #STILL GOTTA TEST ALL ERROR HANDLING
 #SHOULD AVOID HANGING (theres a bunch of places it can just stop)
-#NEED TO ADD TIMEOUT TO VERIFY FUNCTION BASED ON BAUD RATE
 
 import serial
 import sys
@@ -11,6 +10,7 @@ import time
 
 BAUD_RATE = 38400
 BYTES_PER_CHUNK = 15 * 128 #bootloader accepts 15 pages of data at a time
+CHECKSUM_LENGTH = 2 #checksum is 2 bytes long
 
 
 
@@ -99,6 +99,15 @@ def windows_start_ansi():
     if sys.platform.startswith('win'): #HAVE TO CLS BEFORE DOING ANY ANSI CONTROL STUFF IN WINDOWS FOR SOME UNGODLY REASON
         os.system('cls')
 
+    
+def BSD_checksum(data):
+    checksum = len(data) #checksum is initialized to length of data
+    for d in data:
+        checksum = (checksum >> 1) + ((checksum & 1) << 15) #circular rotate right
+        checksum += d
+        checksum %= 2**16 #keep checksum 16 bit
+    return checksum
+
 
 def upload(port, data):
     windows_start_ansi()
@@ -117,9 +126,9 @@ def upload(port, data):
 def verify(port, data):
     print("verifying upload...")
     data = data[-1::-1] #reverse data since bootloader sends it back in reverse order
-    num_garbage_bytes = len(data) % 2 #IF THE LENGTH OF THE PROGRAM ISN'T EVEN THE BOOTLOADER WILL ADD AN EXTRA RANDOM BYTE TO THE END
-    bootloaded = port.read(len(data) + num_garbage_bytes)
-    if bootloaded[num_garbage_bytes:] != data:
+    checksum = port.read(CHECKSUM_LENGTH)
+    checksum = int.from_bytes(checksum, byteorder="big")
+    if checksum != BSD_checksum(data):
         error("program wasn't uploaded properly (verification failed)")
     print("done verifying")
 
