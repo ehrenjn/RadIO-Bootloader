@@ -137,6 +137,7 @@ def bootload(data):
     port = open_port()
     upload(port, data)
     verify(port, data)
+    port.close()
 
 
 
