@@ -1,11 +1,12 @@
-;before uploading the bootloader the following fuses must be changed:
+;before uploading the bootloader make sure the following fuses are set:
 	;BOOTRST must be *programmed* (set to 0)
 		;this fuse determines if the mcu begins exectution in the bootloader section instead of address 0
 	;BOOTSZ1 and BOOTSZ0 must be *unprogrammed* (set to 1)
 		;these two fuses control WHERE the bootloader section begins in memory
 		;setting them both to 1 creates the smallest bootloader space possible on the 328p (256 words)
+		;these should already be unprogrammed by default but whatever
 
-;it is recommended to also set up the following lock bits after the bootloader is uploaded to stop application code from erasing the bootloader:
+;it is recommended to also set up the following lock bits after the bootloader is uploaded to prevent the bootloader from being erased by accident:
 	;*program* BLB11 (set to 0) and *unprogram* BLB12 (set to 1)
 		;this will make it impossible for any code to write to the bootloader section 
 
@@ -24,20 +25,13 @@
 ;first fill the page buffer, then erase the old page, then write the new page.
 
 
-;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
-;BEFORE RESETTING THE USART MAKE SURE ALL SENDING HAS FINISHED (DIFFERENT FROM WHEN YOU'RE ABLE TO WRITE TO TRANSMITTER)
-	;AHHHHH NOTHING WORKS FOR SOME REASON.... I DONT REALLY NEED TO BE ABLE TO DO IT EXCEPT FOR DEBUG THOUGH....
-	;WHEN CONSIDERING ALL THE OPTIONS THE BEST ONE TBH IS JUST SENDING 3 BYTES TO FLUSH THE CHUBES
+;future optimizations:
+	;CAN PROBABLY ADD THINGS TO THE PAGE BUFFER WHILE A PAGE ERASE IS HAPPENING
+	;MIGHT END UP BEING FASTER TO FILL PAGE BUFFER ITSELF INSTEAD OF QUEUE EVEN THOUGH IT WOULD MEAN MORE OS CALLS ON THE UPLOAD SCRIPT SIDE (since you'd only send one page at a time instead of 15)
+		;would have to do some tests
 
-;WOULD IT BE FASTER TO FILL PAGE BUFFER ITSELF INSTEAD OF QUEUE EVEN THOUGH IT MEANS MORE OS CALLS?
-	;could run some speed tests on a bunch of things, could also just ignore it since it doesnt totally matter
-;STILL SHOULD DO A READ OF THE WHOLE THING TO MAKE SURE EVERYTHING MAKES SENSE AND THERES NO USELESS VARIABLES
-;THERES PROBABLY NEW VARIABLES THAT YOU USE IN YOUR CODE THAT YOU DONT HAVE DEFINED 
-	;although I guess compiling will tell you all about em
-;KEEP IN MIND THAT WE'RE OFTEN GONNA BOOTLOAD A TRASH BYTE AT THE END (if theres an odd number of bytes bootloaded)
-	;often not 0
-;MIGHT WANNA FIGURE OUT IF I CAN ADD THINGS TO THE PAGE BUFFER WHILE A PAGE ERASE IS HAPPENING
-;MAKE SURE LOCK BITS STILL MAKE SENSE
+
+;MAKE SURE YOU'RE READING AND WRITING TO THE RIGHT PINS
 ;THAT WAIT_SPM AFTER ENABLING RWW SECTION IS PRETTY SHADY...
 ;MAYBE JUST MAKE THE BOOTLOADER WAIT FOR ONE LAST BYTE FROM THE UPLOAD SCRIPT BEFORE SHUTTING DOWN 
 	;this'll also make the reset code cleaner (GET RID OF FLUSH CODE AND OTHER USART WAIT CODE)
