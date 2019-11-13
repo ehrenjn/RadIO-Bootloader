@@ -175,7 +175,6 @@ def verify(port, data):
     checksum = int.from_bytes(checksum, byteorder="big")
     if checksum != BSD_checksum(data):
         error("program wasn't uploaded properly (verification failed)")
-    time.sleep(5)
     port.write(bytes(1)) #send one last byte to bootloader to let it know it can exit (can be any byte)
     print("done verifying")
 
