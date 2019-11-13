@@ -122,6 +122,15 @@ check_if_spm_done:
 .ENDMACRO
 
 
+;waits until there is a byte to be read from the usart
+.MACRO wait_for_usart_byte
+check_usart:
+	lds TEMP_REG, UCSR0A ;grab status reg
+	sbrs TEMP_REG, 7 ;see if there is some unread data in USART
+	rjmp check_usart ;if theres no unread data then keep waiting
+.ENDMACRO
+
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                                pre-bootloader
@@ -187,10 +196,8 @@ receive_data:
 
 fill_queue:
 
-wait_for_byte:
-	lds TEMP_REG, UCSR0A ;grab status reg
-	sbrs TEMP_REG, 7 ;see if there is some unread data in USART 
-	rjmp wait_for_byte ;if theres no unread data then keep waiting
+;wait for a new byte to arrive
+	wait_for_usart_byte
 
 ;make sure there were no errors
 	lds USART_SEND_REG, UCSR0A ;load status into USART_SEND_REG so I can send an error asap 
@@ -360,6 +367,9 @@ add_byte_to_checksum:
 	mov USART_SEND_REG, VERIFY_CHECKSUM_LO ;send lo byte of checksum
 	rcall send_byte
 
+;wait for verification success from upload script
+	wait_for_usart_byte ;this way the application program doesn't start right away if it wasn't bootloaded properly, AND we make sure that all usart data has been transmitted (theres a bit that you should be able to check to make sure of that but data still somehow manages to get messed up when you reset all the usart registers right afterwards)
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;                                 reset registers
@@ -369,17 +379,6 @@ add_byte_to_checksum:
 	clr TEMP_REG ;next two registers should be reset to 0
 	out PORTB, TEMP_REG ;reset port b but also turn off LED to indicate we're no longer in the bootloader
 	out DDRB, TEMP_REG ;all port b pins are inputs by default
-
-wait_for_final_usart_transmit:
-	lds TEMP_REG, UCSR0A ;have to wait for any transmissions to finish before I reset the usart, otherwise some data could be lost
-	sbrs TEMP_REG, 6 ;check if theres any data being sent still
-	rjmp wait_for_final_usart_transmit ;keep waiting until transmission is done
-
-;flush out untransmitted usart data
-	ser USART_SEND_REG
-	rcall send_byte ;I shouldn't have to do this because I already check bit 6 of UCSR0A but for some reason it doesn't work (possible pyserial issue?)
-	rcall send_byte 
-	rcall send_byte ;send thrice just so it doesn't reset before the first one is sent, you'll still just see 1 '\xFF' probably
 
 ;reset usart registers
 	clr TEMP_REG ;next three registers should be reset to 0

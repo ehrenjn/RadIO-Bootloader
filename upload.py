@@ -36,9 +36,10 @@ BYTE_ACTIONS = {
 
 
 ERROR_BYTE_MAX = bytes([31])
+ERROR_BYTE_MIN = bytes([1])
 
 def is_usart_error_byte(byte):
-    return byte <= ERROR_BYTE_MAX
+    return byte >= ERROR_BYTE_MIN and byte <= ERROR_BYTE_MAX
 
 def bit_n(byte, n):
     return (byte & (1 << n)) != 0
@@ -130,8 +131,10 @@ def upload_chunk(port, chunk, is_last_chunk):
 def process_bootloader_response(response):
     if is_usart_error_byte(response):
         parse_usart_error(response)
-    else:
+    elif response in BYTE_ACTIONS:
         BYTE_ACTIONS[response]()
+    else:
+        error(f"received weird byte from bootloader: {response}")
 
 
 def os_is_windows():
@@ -172,6 +175,8 @@ def verify(port, data):
     checksum = int.from_bytes(checksum, byteorder="big")
     if checksum != BSD_checksum(data):
         error("program wasn't uploaded properly (verification failed)")
+    time.sleep(5)
+    port.write(bytes(1)) #send one last byte to bootloader to let it know it can exit (can be any byte)
     print("done verifying")
 
 
