@@ -1,6 +1,8 @@
 #CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
 #MAKE YOUR SLEEP AS SHORT AS POSSIBLE
 #STILL GOTTA TEST ALL ERROR HANDLING
+#SHOULD ALSO CATCH ALL ERRORS AND RETURN MORE MEANINGFUL ERROR MESSAGE
+    #except maybe when you rip out the usb halfway through an upload
 #SHOULD AVOID HANGING (theres a bunch of places it can just stop)
 
 import serial
@@ -15,12 +17,12 @@ CHECKSUM_LENGTH = 2 #checksum is 2 bytes long
 
 
 def error(msg):
-    print(msg)
+    print(f"ERROR: {msg}")
     exit()
 
 
 def invalid_write():
-    error("ERROR: the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
+    error("the bootloader attempted to write to a memory location occupied by itself (are you uploading a program > 32256 bytes?)")
 
 def do_nothing():
     pass
@@ -68,13 +70,50 @@ def chunk_data(data):
     ]
 
 
-def open_port():
-    return serial.Serial(
-        'COM3', 
-        BAUD_RATE, 
-        parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
-        stopbits = serial.STOPBITS_TWO
-    )
+def open_port(port_name):
+    try:
+        return serial.Serial(
+            port_name, 
+            BAUD_RATE, 
+            parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
+            stopbits = serial.STOPBITS_TWO
+        )
+    except serial.SerialException: 
+        error(f"port not found: {port_name}")
+
+
+def get_windows_ports():
+    all_ports = (f"COM{port_num}" for port_num in range(256))
+    real_ports = []
+    for port_name in all_ports:
+        try:
+            port = serial.Serial(port_name)
+            port.close()
+            real_ports.append(port_name)
+        except serial.SerialException: 
+            pass
+    return real_ports
+
+
+def get_port(port_arg):
+    if port_arg is not None: #use specified port if it exists
+        return open_port(port_arg)
+
+    possible_ports = get_windows_ports() if os_is_windows() else []
+    if len(possible_ports) == 0:
+        error("no serial port specified and no available ports found")
+    elif len(possible_ports) == 1: #if theres only one possible port then use that one
+        return open_port(possible_ports[0])
+
+    else: #let user choose port if there is > 1 possible port
+        for port_num, port in enumerate(possible_ports):
+            print(f"{port_num}: {port}")
+        chosen_port = input("port number to use: ")
+        try:
+            port_name = possible_ports[int(chosen_port)]
+        except (ValueError, IndexError):
+            error(f"invalid port number: {chosen_port}")
+        return open_port(port_name)
 
 
 def upload_chunk(port, chunk, is_last_chunk):
@@ -95,8 +134,11 @@ def process_bootloader_response(response):
         BYTE_ACTIONS[response]()
 
 
+def os_is_windows():
+    return sys.platform.startswith('win')
+
 def windows_start_ansi():
-    if sys.platform.startswith('win'): #HAVE TO CLS BEFORE DOING ANY ANSI CONTROL STUFF IN WINDOWS FOR SOME UNGODLY REASON
+    if os_is_windows(): #HAVE TO CLS BEFORE DOING ANY ANSI CONTROL STUFF IN WINDOWS FOR SOME UNGODLY REASON
         os.system('cls')
 
     
@@ -133,23 +175,32 @@ def verify(port, data):
     print("done verifying")
 
 
-def bootload(data):
-    port = open_port()
+def read_data_file(file_path):
+    try:
+        with open(file_path, 'rb') as data:
+            return data.read()
+    except FileNotFoundError:
+        error(f"can't read provided file ({file_path})")
+
+
+def parse_args(args):
+    if len(args) >= 2:
+        data_file = args[1]
+        port_name = args[2] if len(args) > 2 else None
+        return data_file, port_name
+    else:
+        error("please provide a program file to upload")
+
+
+
+def bootload(args):
+    data_file, port_name = parse_args(args)
+    port = get_port(port_name)
+    data = read_data_file(data_file)
     upload(port, data)
     verify(port, data)
     port.close()
 
 
-
 if __name__ == "__main__":
-    if len(sys.argv) >= 2:
-        data_file = sys.argv[1]
-        try:
-            with open(data_file, 'rb') as data:
-                data_bytes = data.read()
-        except FileNotFoundError:
-            print(f"ERROR: can't read provided file ({data_file})")
-        else:
-            bootload(data_bytes)
-    else:
-        print("ERROR: please provide a program file to upload")
+    bootload(sys.argv)
