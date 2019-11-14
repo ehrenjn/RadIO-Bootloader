@@ -1,3 +1,5 @@
+#IF VERIFICATION HANGS BUT THE BOOTLOADED PROGRAM EXECUTES ANYWAY ITS ALMOST CERTAINLY THE HORRIBLE GLITCH IN PYSERIAL (race condition)
+
 #STILL GOTTA TEST ALL ERROR HANDLING
 #SHOULD ALSO CATCH ALL ERRORS AND RETURN MORE MEANINGFUL ERROR MESSAGE
     #except maybe when you rip out the usb halfway through an upload
@@ -11,6 +13,7 @@ import time
 BAUD_RATE = 38400
 BYTES_PER_CHUNK = 15 * 128 #bootloader accepts 15 pages of data at a time
 CHECKSUM_LENGTH = 2 #checksum is 2 bytes long
+MAX_BOOTLOAD_RESPONSE_TIME = 1 #seconds until a timeout occurs when reading
 
 
 
@@ -69,16 +72,33 @@ def chunk_data(data):
     ]
 
 
-def open_port(port_name):
-    try:
-        return serial.Serial(
-            port_name, 
-            BAUD_RATE, 
-            parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
-            stopbits = serial.STOPBITS_TWO
-        )
-    except serial.SerialException: 
-        error(f"port not found: {port_name}")
+class RadIOSerialPort(serial.Serial):
+    
+    def __init__(self, port_name):
+        try:
+            super().__init__(
+                port_name,
+                BAUD_RATE,
+                parity = serial.PARITY_SPACE, #USING PARITY AS 9TH BIT (PARITY_SPACE means 0)
+                stopbits = serial.STOPBITS_TWO,
+                timeout = MAX_BOOTLOAD_RESPONSE_TIME
+            )
+        except serial.SerialException:
+            error(f"port not found: {port_name}")
+
+    def read(self, num_bytes=1):
+        received = super().read(num_bytes)
+        if len(received) < num_bytes: #if a timeout occured
+            self.close()
+            error("bootloader didn't respond")
+        return received
+
+    def write(self, data):
+        try:
+            super().write(data)
+        except serial.serialutil.SerialTimeoutException:
+            self.close()
+            error("can't send data (was the serial cable disconnected?)")
 
 
 def get_windows_ports():
@@ -96,13 +116,13 @@ def get_windows_ports():
 
 def get_port(port_arg):
     if port_arg is not None: #use specified port if it exists
-        return open_port(port_arg)
+        return RadIOSerialPort(port_arg)
 
     possible_ports = get_windows_ports() if os_is_windows() else []
     if len(possible_ports) == 0:
         error("no serial port specified and no available ports found")
     elif len(possible_ports) == 1: #if theres only one possible port then use that one
-        return open_port(possible_ports[0])
+        return RadIOSerialPort(possible_ports[0])
 
     else: #let user choose port if there is > 1 possible port
         for port_num, port in enumerate(possible_ports):
@@ -112,7 +132,7 @@ def get_port(port_arg):
             port_name = possible_ports[int(chosen_port)]
         except (ValueError, IndexError):
             error(f"invalid port number: {chosen_port}")
-        return open_port(port_name)
+        return RadIOSerialPort(port_name)
 
 
 def upload_chunk(port, chunk, is_last_chunk):
