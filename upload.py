@@ -1,5 +1,3 @@
-#CHANGE THIS SO YOU ACTUALLY GET TO CHOOSE THE SERIAL PORT
-#MAKE YOUR SLEEP AS SHORT AS POSSIBLE
 #STILL GOTTA TEST ALL ERROR HANDLING
 #SHOULD ALSO CATCH ALL ERRORS AND RETURN MORE MEANINGFUL ERROR MESSAGE
     #except maybe when you rip out the usb halfway through an upload
@@ -120,7 +118,7 @@ def get_port(port_arg):
 def upload_chunk(port, chunk, is_last_chunk):
     if is_last_chunk: 
         port.write(chunk[:-1])
-        time.sleep(0.1) #HAVE TO WAIT A BIT FOR PREVIOUS WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION IN PYSERIAL) (if I change the parity right after writing then it'll use that parity instead of the parity set before writing)
+        time.sleep(0.06) #HAVE TO WAIT A BIT FOR PREVIOUS WRITE TO FINISH BEFORE CHANGING THE PARITY AGAIN (TERRIBLE RACE CONDITION OR SOMETHING IN PYSERIAL (probably windows specific and could have to do with ftdi specifically though)) (if I change to mark parity right after writing a byte then it'll use mark parity for that byte instead of space parity)
         port.parity = serial.PARITY_MARK #change 9th bit to a 1
         port.write(chunk[-1:])
     else:
