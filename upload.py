@@ -1,10 +1,5 @@
 #IF VERIFICATION HANGS BUT THE BOOTLOADED PROGRAM EXECUTES ANYWAY ITS ALMOST CERTAINLY THE HORRIBLE GLITCH IN PYSERIAL (race condition)
 
-#STILL GOTTA TEST ALL ERROR HANDLING
-#SHOULD ALSO CATCH ALL ERRORS AND RETURN MORE MEANINGFUL ERROR MESSAGE
-    #except maybe when you rip out the usb halfway through an upload
-#SHOULD AVOID HANGING (theres a bunch of places it can just stop)
-
 import serial
 import sys
 import os
