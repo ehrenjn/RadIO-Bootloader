@@ -2,4 +2,6 @@
 
 !.gitignore
 !RadIO Bootloader.asm
+!RadIO Bootloader.hex
 !upload.py
+!README.md
