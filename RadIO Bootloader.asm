@@ -6,7 +6,7 @@
 		;setting them both to 1 creates the smallest bootloader space possible on the 328p (256 words)
 		;these should already be unprogrammed by default but whatever
 
-;it is recommended to also set up the following lock bits after the bootloader is uploaded to prevent the bootloader from being erased by accident:
+;it is recommended to also set up the following lock bits to prevent the bootloader from being erased by accident:
 	;*program* BLB11 (set to 0) and *unprogram* BLB12 (set to 1)
 		;this will make it impossible for any code to write to the bootloader section 
 
