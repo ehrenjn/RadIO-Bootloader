@@ -1,9 +1,19 @@
-An ATmega328p / ATmega328pb bootloader for @danielj-n's [RadIO project](https://github.com/danielj-n/RadIO/)
+An ATmega328p / ATmega328pb bootloader for @danielj-n's [RadIO project](https://github.com/danielj-n/RadIO/) that allows you to program RadIO over a USB connection  
+
+#### Features:
+
+- Only 512 bytes
+	- Leaves room for as much application code as possible
+- Built in error detection
+	- Detects data overrun and USART frame errors
+	- Detects when it is trying to overwrite its own code
+	- Verifies uploaded program using a checksum
+- Fast
+	- Main bottleneck is serial baud which, in theory, can be pushed much higher than other ATmega bootloaders
 
 
 
-
-## Overview
+## Usage
 
 ### First time setup
 
@@ -105,7 +115,7 @@ To compile to binary using the avr-gcc toolchain, run the following commands:
 
 `python upload.py <file> <port>`
 
-**file** - The name of the compiled binary file to upload to radIO  
-**port** - (Optional in Windows) The serial port that radIO is plugged in to
+**file** - The name of the compiled binary file to upload to RadIO  
+**port** - (Optional in Windows) The serial port that RadIO is plugged in to
 
 If the program is uploaded successfully the bootloader indicator LED will turn off and the uploaded program will begin
