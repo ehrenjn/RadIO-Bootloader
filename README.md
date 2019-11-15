@@ -29,7 +29,7 @@ An ATmega328p / ATmega328pb bootloader for @danielj-n's [RadIO project](https://
 
 (0 means **programmed** and 1 means **unprogrammed**)
 
-#### Mandatory fuse bits
+### Mandatory fuse bits
 
 | Fuse Bit | Value | Explanation                                                                        |
 |----------|------:|:----------------------------------------------------------------------------------:|
@@ -46,7 +46,7 @@ To change those fuse bits while maintaining the default RadIO fuse bits, set the
 |EXTENDED   |   0xFF|
 
 
-#### Optional lock bits
+### Optional lock bits
 
 Setting the following lock bits will make it impossible to programmatically overwrite the bootloader:
 
